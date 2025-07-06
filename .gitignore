@@ -1,0 +1,26 @@
+# Data files
+data/database/*.sqlite3
+data/scraped_data/
+data/models/
+
+# Environment files
+.env
+secrets.yaml
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Notebooks
+notebooks/.ipynb_checkpoints/
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+
+# Editor files
+.vscode/
+.idea/

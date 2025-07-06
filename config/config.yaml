@@ -1,0 +1,26 @@
+capital: 100000
+risk_per_trade: 0.01
+min_risk_reward: 2.0
+swing_period: 2
+entry_offset: 0.5
+slippage: 0.1
+atr_period: 14
+atr_threshold: 0.005
+gap_threshold: 0.01
+exit_time: '15:45'
+timezone: 'America/New_York'
+db_path: 'data/database/trading_data.sqlite3'
+num_top_stocks: 7
+gemma_api: 'http://localhost:11434/api/generate'
+deepseek_api: 'http://localhost:11434/api/generate'
+forex_factory_url: 'https://www.forexfactory.com/calendar'
+twitter_url: 'https://twitter.com/home'
+scroll_pause: 3
+tweet_capture_limit: 50
+pattern_lookback: 30
+timeframes:
+  short_term: 
+    - '5min'
+    - '10min'
+    - '15min'
+  trend: '1h'
