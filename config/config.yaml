@@ -1,26 +1,39 @@
+db_path: data/database/trading_data.sqlite3
+num_top_stocks: 1
+target_symbol: SPY
+timezone: America/New_York
 capital: 100000
 risk_per_trade: 0.01
-min_risk_reward: 2.0
-swing_period: 2
-entry_offset: 0.5
-slippage: 0.1
-atr_period: 14
-atr_threshold: 0.005
-gap_threshold: 0.01
-exit_time: '15:45'
-timezone: 'America/New_York'
-db_path: 'data/database/trading_data.sqlite3'
-num_top_stocks: 7
-gemma_api: 'http://localhost:11434/api/generate'
-deepseek_api: 'http://localhost:11434/api/generate'
-forex_factory_url: 'https://www.forexfactory.com/calendar'
-twitter_url: 'https://twitter.com/home'
-scroll_pause: 3
-tweet_capture_limit: 50
-pattern_lookback: 30
+
+# Data Source Configuration
+data_source: "polygon" # Options: "alpha_vantage", "yahoo_finance", "alpaca", "polygon", "finnhub"
+polygon_api_key: "d241cjhr01qv4g02pbn0d241cjhr01qv4g02pbng"
+alpaca_base_url: "https://paper-api.alpaca.markets/v2"
+user_data_dir: 'C:\Users\tojos\AppData\Local\Google\Chrome\User Data'
+profile_directory: "Default"
+
+# Add this to disable GPU acceleration
+
 timeframes:
-  short_term: 
+  short_term:
     - '5min'
     - '10min'
     - '15min'
   trend: '1h'
+
+# API endpoints for local LLMs
+gemma_api: http://localhost:11434/api/generate
+deepseek_api: http://localhost:11434/api/generate
+#'alpha_vantage_api_key': 'YOUR_ALPHA_VANTAGE_KEY'
+'fred_api_key': 'd5d2da190d4bb62ac513a6c6f1db5f88'
+
+strategy:
+  params:
+    primary_timeframe: '1h'
+    secondary_timeframe: '15m'
+    ema_short_period: 20
+    ema_long_period: 50
+    atr_period: 14
+    atr_multiplier: 1.5
+    breakout_period: 5
+    risk_per_trade: 0.01

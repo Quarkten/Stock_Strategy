@@ -24,3 +24,13 @@ logs/
 # Editor files
 .vscode/
 .idea/
+
+# Removed files
+bypass_firefox.py
+src/data/forex_factory.py
+src/data/twitter_sentiment.py
+NEWS.txt
+LICENSE.txt
+install-pyenv-win.ps1
+2.0
+2.0'

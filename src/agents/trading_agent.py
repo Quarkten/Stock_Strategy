@@ -48,4 +48,20 @@ class TradingAgent:
         signals = []
         for tf, tf_patterns in patterns.items():
             for pattern in tf_patterns:
-                if self.is_valid_s
+                if self.is_valid_signal(pattern, trend_direction):
+                    signals.append({
+                        'symbol': None,  # Symbol needs to be passed down
+                        'timeframe': tf,
+                        'pattern': pattern,
+                        'trend': trend_direction
+                    })
+        return signals
+
+    def is_valid_signal(self, pattern, trend_direction):
+        """Check if a pattern is a valid signal in the current trend"""
+        # This is a simplified logic. A more complex system would have a scoring mechanism.
+        if trend_direction == 'bullish' and pattern.get('type') == 'bullish':
+            return True
+        if trend_direction == 'bearish' and pattern.get('type') == 'bearish':
+            return True
+        return False

@@ -28,11 +28,17 @@ def visualize_multi_timeframe(symbol, signal_timeframe, pattern):
 
 def highlight_pattern(ax, data, pattern):
     last_index = len(data) - 1
-    if pattern == 'hammer':
+    if pattern.lower() == 'hammer':
         # Add annotation for hammer pattern
         ax.annotate('Hammer', 
-                   (last_index, data['3. low'].iloc[-1]),
+                   (mdates.date2num(data.index[-1]), data['Low'].iloc[-1]),
                    xytext=(0, -20), textcoords='offset points',
                    arrowprops=dict(arrowstyle="->", color='blue'),
                    color='blue', fontsize=12)
-    # ... other pattern highlights
+    elif pattern.lower() == 'engulfing':
+        ax.annotate('Engulfing',
+                    (mdates.date2num(data.index[-1]), data['Low'].iloc[-1]),
+                    xytext=(0, -20), textcoords='offset points',
+                    arrowprops=dict(arrowstyle="->", color='green'),
+                    color='green', fontsize=12)
+    # Add more pattern highlights here...
