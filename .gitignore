@@ -6,7 +6,8 @@ data/models/
 # Environment files
 .env
 secrets.yaml
-
+Lib/
+py311_env/
 # Python cache
 __pycache__/
 *.pyc
