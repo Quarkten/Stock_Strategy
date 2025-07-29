@@ -35,3 +35,10 @@ LICENSE.txt
 install-pyenv-win.ps1
 2.0
 2.0'
+py311_env/
+Lib/
+*.dll
+*.lib
+*.so
+*.pyd
+__pycache__/
