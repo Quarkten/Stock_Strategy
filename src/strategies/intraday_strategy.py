@@ -7,25 +7,32 @@ class IntradayStrategy:
 
     def evaluate_daily_bias_tjr_style(self, spy_daily_data, spy_weekly_data, spy_4h_data, spy_1h_data):
         print("Evaluating daily bias (TJR Style) with actual data...")
-        
-        # Placeholder for TJR style daily bias evaluation
-        # This is a simplified example. A real implementation would involve:
-        # 1. Analyzing yesterday's candle shape (e.g., using PatternDetector for engulfing, doji, etc.)
-        # 2. Determining higher timeframe trend structure (e.g., using TrendAnalyzer for 4H, 1H)
-        # 3. Identifying Break of Structure (BoS) and liquidity zones.
 
-        bias = "UNCERTAIN"
+        if spy_daily_data.empty or len(spy_daily_data) < 21:
+            return "UNCERTAIN"
 
-        # Example: Check yesterday's candle for strong bullish/bearish close
-        if not spy_daily_data.empty:
-            yesterday_candle = spy_daily_data.iloc[-1]
-            if yesterday_candle['close'] > yesterday_candle['open'] * 1.01: # 1% bullish close
-                bias = "BULLISH"
-            elif yesterday_candle['close'] < yesterday_candle['open'] * 0.99: # 1% bearish close
-                bias = "BEARISH"
-        
-        # Further logic would combine this with trend and structure analysis
-        return bias
+        # --- EMA Trend ---
+        spy_daily_data.loc[:, 'ema20'] = spy_daily_data['close'].ewm(span=20, adjust=False).mean()
+        last_close = spy_daily_data['close'].iloc[-1]
+        last_ema = spy_daily_data['ema20'].iloc[-1]
+
+        trend_bias = "BULLISH" if last_close > last_ema else "BEARISH"
+
+        # --- Yesterday's Candle ---
+        yesterday_candle = spy_daily_data.iloc[-2] # Use the second to last candle for yesterday
+        candle_bias = "UNCERTAIN"
+        if yesterday_candle['close'] > yesterday_candle['open']:
+            candle_bias = "BULLISH"
+        elif yesterday_candle['close'] < yesterday_candle['open']:
+            candle_bias = "BEARISH"
+
+        # --- Combine Biases ---
+        if trend_bias == candle_bias:
+            print(f"  > Trend bias ({trend_bias}) and candle bias ({candle_bias}) are aligned.")
+            return trend_bias
+        else:
+            print(f"  > Trend bias ({trend_bias}) and candle bias ({candle_bias}) are not aligned.")
+            return "UNCERTAIN"
 
     def detect_bullish_flag(self, data):
         print("Detecting bullish flag...")
@@ -60,7 +67,7 @@ class IntradayStrategy:
         
         if data.empty or len(data) < 3: # Need at least 3 candles for a basic sweep detection
             print("  > Liquidity sweep not found: Insufficient data.")
-            return False
+            return None
 
         # Example: Check if current candle swept the low of the previous candle and closed higher
         # This is a very basic interpretation and needs refinement.
@@ -70,15 +77,15 @@ class IntradayStrategy:
         # Bullish sweep: price goes below previous low, then closes above previous close
         if last_candle['low'] < prev_candle['low'] and last_candle['close'] > prev_candle['close']:
             print("  > Bullish liquidity sweep detected.")
-            return True
+            return "BULLISH"
         
         # Bearish sweep: price goes above previous high, then closes below previous close
         if last_candle['high'] > prev_candle['high'] and last_candle['close'] < prev_candle['close']:
             print("  > Bearish liquidity sweep detected.")
-            return True
+            return "BEARISH"
 
         print("  > Liquidity sweep not found.")
-        return False
+        return None
 
     def detect_inverse_fvg(self, data):
         print("Detecting Inverse Fair Value Gap (FVG)...")

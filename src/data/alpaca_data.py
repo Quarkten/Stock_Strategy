@@ -35,11 +35,11 @@ class AlpacaData:
             base_url=self.base_url
         )
 
-    def get_historical_data(self, symbol, interval='1D', period='1y'):
+    def get_historical_data(self, symbol, interval='1D', start=None, end=None, period=None):
         """
         Fetch historical data from Alpaca.
         Intervals: 1Min, 5Min, 15Min, 1H, 1D
-        Period is not directly used by Alpaca's get_bars, instead we use start/end dates.
+        Specify either period (e.g., '1y') or start/end dates.
         """
         try:
             print(f"Fetching data for {symbol} with interval {interval} from Alpaca...")
@@ -61,27 +61,27 @@ class AlpacaData:
             }
             alpaca_interval = alpaca_interval_map.get(interval, '1D')
 
-            # Calculate start and end dates based on period
-            end_date = datetime.now()
-            if period == '1mo':
-                start_date = end_date - timedelta(days=30)
-            elif period == '1y':
-                start_date = end_date - timedelta(days=365)
-            elif period == '5y':
-                start_date = end_date - timedelta(days=5 * 365)
-            elif period == '10y':
-                start_date = end_date - timedelta(days=10 * 365)
-            elif period == '20y':
-                start_date = end_date - timedelta(days=20 * 365)
-            elif period == '60d':
-                start_date = end_date - timedelta(days=60)
-            else: # Default to 1 year
-                start_date = end_date - timedelta(days=365)
+            if start and end:
+                start_date = start
+                end_date = end
+            else:
+                end_date = datetime.now()
+                if period == '1mo':
+                    start_date = end_date - timedelta(days=30)
+                elif period == '1y':
+                    start_date = end_date - timedelta(days=365)
+                elif period == '5y':
+                    start_date = end_date - timedelta(days=5 * 365)
+                elif period == '10y':
+                    start_date = end_date - timedelta(days=10 * 365)
+                elif period == '20y':
+                    start_date = end_date - timedelta(days=20 * 365)
+                elif period == '60d':
+                    start_date = end_date - timedelta(days=60)
+                else: # Default to 1 year
+                    start_date = end_date - timedelta(days=365)
 
-            # Alpaca's get_bars returns a BarSet object
-            # Ensure correct date format for Alpaca API
-            # For daily intervals, Alpaca expects YYYY-MM-DD
-            # For intraday intervals, it expects RFC3339 (ISO 8601) format
+                        # For intraday intervals, it expects RFC3339 (ISO 8601) format
             if alpaca_interval == '1D':
                 start_param = start_date.strftime("%Y-%m-%d")
                 end_param = end_date.strftime("%Y-%m-%d")

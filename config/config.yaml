@@ -37,3 +37,7 @@ strategy:
     atr_multiplier: 1.5
     breakout_period: 5
     risk_per_trade: 0.01
+
+#config/config.yaml
+scraper:
+  requires_login: true

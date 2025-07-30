@@ -109,25 +109,32 @@ class TradingSystem:
 
             # Fetch news from the scraper
             print("\n[2/5] Fetching news from the scraper...")
-            scraper_config = ScrapingConfig(
-                user_data_dir=self.config.get('user_data_dir'),
-                profile_directory=self.config.get('profile_directory')
-            )
+            scraper_config = ScrapingConfig(**self.config.get('scraper', {}))
             scraper = ForexCalendarScraper(config=scraper_config)
-            print(f"  - Scraper initialized with user_data_dir: {scraper_config.user_data_dir}")
-            scraped_events = scraper.get_news()
+            
+            calendar_data, news_data = scraper.get_news()
             
             # Format the scraped data for the LLM
             print("\n[3/5] Formatting scraped data for LLM...")
-            if scraped_events:
+            if calendar_data:
                 formatted_calendar = "\n".join([
                     f"- Event: {e.get('event', 'N/A')}, Time: {e.get('time', 'N/A')}, Currency: {e.get('currency', 'N/A')}, Impact: {e.get('impact', 'N/A')}, Actual: {e.get('actual', 'N/A')}, Forecast: {e.get('forecast', 'N/A')}, Previous: {e.get('previous', 'N/A')}" 
-                    for e in scraped_events
+                    for e in calendar_data
                 ])
-                print("  - Successfully formatted scraped events.")
+                print("  - Successfully formatted scraped calendar events.")
             else:
                 formatted_calendar = "No economic events found."
-                print("  - No economic events found to format.")
+                print("  - No economic calendar events found to format.")
+
+            if news_data:
+                formatted_news = "\n".join([
+                    f"- Headline: {n.get('headline', 'N/A')}, Time: {n.get('time', 'N/A')}, Source: {n.get('comments', 'N/A')}, Impact: {n.get('impact', 'N/A')}" 
+                    for section in news_data.values() for n in section
+                ])
+                print("  - Successfully formatted scraped news.")
+            else:
+                formatted_news = "No news found."
+                print("  - No news found to format.")
 
             llm_bias = self.llm_analyzer.get_spy_bias(macro_news, formatted_calendar)
             print(f"  - LLM determined SPY bias: {llm_bias}")
@@ -260,233 +267,116 @@ class TradingSystem:
             time.sleep(60)
 
     def run_backtest(self, symbol, start_date, end_date):
-        # output_capture = io.StringIO()
-        # with contextlib.redirect_stdout(output_capture):
-            print(f"Running backtest for {symbol} from {start_date} to {end_date}")
+        print(f"Running backtest for {symbol} from {start_date} to {end_date}")
 
-            start_dt = datetime.strptime(start_date, "%Y%m%d")
-            end_dt = datetime.strptime(end_date, "%Y%m%d")
+        start_dt = datetime.strptime(start_date, "%Y%m%d")
+        end_dt = datetime.strptime(end_date, "%Y%m%d")
 
-            # Fetch historical data for all required timeframes for the entire backtesting period
-            # This might be a large data fetch, consider optimizing for very long backtests
-            print(f"Fetching historical data for {symbol} for all timeframes...")
-            
-            # Multi-timeframe strategy needs daily, weekly, 4h, 1h
-            # Intraday strategy needs 15min, 5min, 1min
-            
-            daily_data = None
-            data_sources_daily = ['alpaca']
-            for source in data_sources_daily:
-                try:
-                    self._initialize_data_fetcher(source)
-                    daily_data = self.data_fetcher.get_historical_data(symbol, 'daily', '20y')
+        print(f"Fetching historical data for {symbol} for all timeframes...")
+        daily_data = self.data_fetcher.get_historical_data(symbol, 'daily', start=start_dt, end=end_dt)
+        data_15m = self.data_fetcher.get_historical_data(symbol, '15min', start=start_dt, end=end_dt)
+        data_1h = self.data_fetcher.get_historical_data(symbol, '1h', start=start_dt, end=end_dt)
 
-                    if daily_data is not None and not daily_data.empty:
-                        daily_data['date'] = daily_data.index.date
-                        filtered_daily_data = daily_data[(daily_data['date'] >= start_dt.date()) & (daily_data['date'] <= end_dt.date())]
-                        if not filtered_daily_data.empty:
-                            print(f"DEBUG: Successfully fetched daily data using {source}: {len(daily_data)} rows, from {daily_data.index.min()} to {daily_data.index.max()}")
-                            daily_data = filtered_daily_data
-                            break
-                        else:
-                            print(f"DEBUG: {source} daily data does not cover the full backtesting period. Trying next source.")
-                    else:
-                        print(f"DEBUG: No daily data found from {source}. Trying next source.")
+        if daily_data.empty or data_15m.empty or data_1h.empty:
+            print("DEBUG: No sufficient data found. Cannot perform backtest.")
+            return
 
-                except AlphaVantageRateLimitError:
-                    print(f"Alpha Vantage rate limit hit. Trying next source for daily data in backtest.")
-                except Exception as e:
-                    print(f"Error fetching daily data from {source}: {e}. Trying next source.")
+        daily_data['date'] = daily_data.index.date
+        data_15m['date'] = data_15m.index.date
+        data_1h['date'] = data_1h.index.date
 
-            if daily_data is None or daily_data.empty:
-                print(f"DEBUG: No sufficient daily data found for {symbol}. Cannot perform backtest.")
-                return
+        backtest_daily_data = daily_data[(daily_data['date'] >= start_dt.date()) & (daily_data['date'] <= end_dt.date())]
+        data_15m = data_15m[(data_15m['date'] >= start_dt.date()) & (data_15m['date'] <= end_dt.date())]
+        data_1h = data_1h[(data_1h['date'] >= start_dt.date()) & (data_1h['date'] <= end_dt.date())]
 
-            # Filter daily data for the specified backtesting period
-            daily_data['date'] = daily_data.index.date
-            backtest_daily_data = daily_data[(daily_data['date'] >= start_dt.date()) & (daily_data['date'] <= end_dt.date())]
+        if backtest_daily_data.empty or data_15m.empty or data_1h.empty:
+            print("DEBUG: No sufficient data available for the specified backtesting period.")
+            return
 
-            if backtest_daily_data.empty:
-                print(f"DEBUG: No sufficient daily data available for the specified backtesting period ({start_date} to {end_date}).")
-                return
+        capital = self.config['capital']
+        risk_per_trade = self.config['risk_per_trade']
+        trades = []
+        position = None
 
-            print(f"DEBUG: Filtered daily data for backtest: {len(backtest_daily_data)} days, from {backtest_daily_data.index.min()} to {backtest_daily_data.index.max()}")
-            print(f"DEBUG: Data loaded for backtesting. Daily: {len(backtest_daily_data)} days.")
+        unique_dates = backtest_daily_data['date'].unique()
+        for current_date in unique_dates:
+            print(f"\nProcessing data for {current_date}...")
 
-            # Fetch 15-minute data for the entire period
-            data_15m = None
-            data_sources_15m = ['alpaca']
-            for source in data_sources_15m:
-                try:
-                    self._initialize_data_fetcher(source)
-                    data_15m = self.data_fetcher.get_historical_data(symbol, '15min', '60d') # Use a reasonable period
+            self.daily_bias = self._evaluate_daily_bias_tjr_style(
+                backtest_daily_data[backtest_daily_data.index.date <= current_date],
+                data_1h[data_1h.index.date <= current_date], 
+                data_1h[data_1h.index.date <= current_date], 
+                data_1h[data_1h.index.date <= current_date]
+            )
+            print(f"Daily bias for {current_date}: {self.daily_bias}")
 
-                    if data_15m is not None and not data_15m.empty:
-                        data_15m['date'] = data_15m.index.date
-                        filtered_data_15m = data_15m[(data_15m['date'] >= start_dt.date()) & (data_15m['date'] <= end_dt.date())]
-                        if not filtered_data_15m.empty:
-                            print(f"DEBUG: Successfully fetched 15-minute data using {source}: {len(data_15m)} rows, from {data_15m.index.min()} to {data_15m.index.max()}")
-                            data_15m = filtered_data_15m
-                            break
-                        else:
-                            print(f"DEBUG: {source} 15-minute data does not cover the full backtesting period. Trying next source.")
-                    else:
-                        print(f"DEBUG: No 15-minute data found from {source}. Trying next source.")
+            current_15m_data = data_15m[data_15m.index.date == current_date]
 
-                except AlphaVantageRateLimitError:
-                    print(f"Alpha Vantage rate limit hit. Trying next source for 15-minute data in backtest.")
-                except Exception as e:
-                    print(f"Error fetching 15-minute data from {source}: {e}. Trying next source.")
-
-            if data_15m is None or data_15m.empty:
-                print(f"DEBUG: No sufficient 15-minute data found for {symbol}. Cannot perform backtest.")
-                return
-
-            # Fetch 1-hour data for the entire period
-            data_1h = None
-            data_sources_1h = ['alpaca', 'yahoo_finance']
-            for source in data_sources_1h:
-                try:
-                    self._initialize_data_fetcher(source)
-                    data_1h = self.data_fetcher.get_historical_data(symbol, '1h', '60d') # Use a reasonable period
-
-                    if data_1h is not None and not data_1h.empty:
-                        data_1h['date'] = data_1h.index.date
-                        filtered_data_1h = data_1h[(data_1h['date'] >= start_dt.date()) & (data_1h['date'] <= end_dt.date())]
-                        if not filtered_data_1h.empty:
-                            print(f"DEBUG: Successfully fetched 1-hour data using {source}: {len(data_1h)} rows, from {data_1h.index.min()} to {data_1h.index.max()}")
-                            data_1h = filtered_data_1h
-                            break
-                        else:
-                            print(f"DEBUG: {source} 1-hour data does not cover the full backtesting period. Trying next source.")
-                    else:
-                        print(f"DEBUG: No 1-hour data found from {source}. Trying next source.")
-
-                except AlphaVantageRateLimitError:
-                    print(f"Alpha Vantage rate limit hit. Trying next source for 1-hour data in backtest.")
-                except Exception as e:
-                    print(f"Error fetching 1-hour data from {source}: {e}. Trying next source.")
-
-            if data_1h is None or data_1h.empty:
-                print(f"DEBUG: No sufficient 1-hour data found for {symbol}. Cannot perform backtest.")
-                return
-
-            capital = self.config['capital']
-            risk_per_trade = self.config['risk_per_trade']
-            trades = []
-            position = None
-
-            # Iterate through each day in the backtesting period
-            unique_dates = backtest_daily_data['date'].unique()
-            print(f"DEBUG: Starting daily iteration for {len(unique_dates)} unique dates.")
-            for current_date in unique_dates:
-                print(f"\nProcessing data for {current_date}...")
-
-                # Simulate daily setup to get daily_bias
-                # In a real backtest, this would be pre-calculated or mocked
-                # For now, we'll use a simplified daily bias based on the daily data
-                # This part might need more sophisticated logic depending on your strategy
-                self.daily_bias = "NEUTRAL" # Placeholder for now
-                print(f"Daily bias for {current_date}: {self.daily_bias}")
-
-                # Get daily data up to current_date for MultiTimeframeTrader
-                current_daily_data = backtest_daily_data[backtest_daily_data.index.date <= current_date]
-                current_15m_data = data_15m[data_15m.index.date == current_date]
-                current_1h_data = data_1h[data_1h.index.date == current_date]
-
-                # --- Multi-Timeframe Strategy Signal Generation ---
-                mtf_historical_data = {
-                    'daily': current_daily_data,
-                    '15m': current_15m_data,
-                    '1h': current_1h_data
-                }
-
-                mtf_signal, mtf_pattern, mtf_timeframe, mtf_size, mtf_trend_dir, mtf_trend_str = \
-                    self.mt_trader.generate_signal(symbol, capital, historical_data=mtf_historical_data)
-                
-                print(f"Multi-Timeframe Signal: {mtf_signal}, Pattern: {mtf_pattern}")
-
-                # --- Intraday Strategy Signal Generation (Removed as 1-min data is not used) ---
-                intraday_signal = "HOLD"
-                intraday_pattern = None
-
-                print(f"Intraday Signal: {intraday_signal}, Pattern: {intraday_pattern}")
-
-                # --- Combine Signals and Execute Trade ---
-                final_signal = "HOLD"
-                trade_pattern = None
-                trade_price = current_daily_data['close'].iloc[-1] if not current_daily_data.empty else None  # Use daily close price for trade
-
-                if trade_price is None:
-                    print("No trade price available for the day. Skipping trade execution.")
-                    continue
-
-                # Prioritize MTF signal
-                if mtf_signal != "HOLD":
-                    final_signal = mtf_signal
-                    trade_pattern = mtf_pattern
-
-                if final_signal != "HOLD":
-                    # Calculate position size based on risk management
-                    risk_amount = capital * risk_per_trade
-                    position_size = risk_amount / (trade_price * 0.01)  # Assuming 1% risk
-                    print(f"Attempting trade: Signal={final_signal}, Price={trade_price:.2f}, Capital={capital:.2f}, Risk Amount={risk_amount:.2f}, Position Size={position_size:.2f}")
-                    
-                    # Execute trade
-                    if final_signal == "BUY" and position is None:
-                        # Placeholder for buy execution
-                        print(f"BUY {position_size:.2f} shares at {trade_price:.2f}")
-                        position = {
-                            'entry_price': trade_price,
-                            'size': position_size,
-                            'direction': 'long',
-                            'stop_loss': trade_price * 0.995,
-                            'take_profit': trade_price * 1.01
-                        }
-                        trades.append({
-                            'date': current_date,
-                            'symbol': symbol,
-                            'action': 'BUY',
-                            'price': trade_price,
-                            'size': position_size,
-                            'pattern': trade_pattern
-                        })
-                    elif final_signal == "SELL" and position is None:
-                        # Placeholder for sell execution
-                        print(f"SELL {position_size:.2f} shares at {trade_price:.2f}")
-                        position = {
-                            'entry_price': trade_price,
-                            'size': position_size,
-                            'direction': 'short',
-                            'stop_loss': trade_price * 1.005,
-                            'take_profit': trade_price * 0.99
-                        }
-                        trades.append({
-                            'date': current_date,
-                            'symbol': symbol,
-                            'action': 'SELL',
-                            'price': trade_price,
-                            'size': position_size,
-                            'pattern': trade_pattern
-                        })
-                # End of day: close position if any
+            for index, row in current_15m_data.iterrows():
                 if position:
-                    # Placeholder for position closing
-                    close_price = current_day_intraday_data['close'].iloc[-1]
-                    pl = (close_price - position['entry_price']) * position['size'] * \
-                         (1 if position['direction'] == 'long' else -1)
-                    capital += pl
-                    print(f"Closing position at {close_price:.2f}. P&L: {pl:.2f}. New capital: {capital:.2f}")
-                    position = None
+                    if position['direction'] == 'long':
+                        if row['low'] <= position['stop_loss']:
+                            print(f"Stop loss hit for long position at {row['low']}")
+                            capital += (position['stop_loss'] - position['entry_price']) * position['size']
+                            position = None
+                        elif row['high'] >= position['take_profit']:
+                            print(f"Take profit hit for long position at {row['high']}")
+                            capital += (position['take_profit'] - position['entry_price']) * position['size']
+                            position = None
+                    elif position['direction'] == 'short':
+                        if row['high'] >= position['stop_loss']:
+                            print(f"Stop loss hit for short position at {row['high']}")
+                            capital += (position['entry_price'] - position['stop_loss']) * position['size']
+                            position = None
+                        elif row['low'] <= position['take_profit']:
+                            print(f"Take profit hit for short position at {row['low']}")
+                            capital += (position['entry_price'] - position['take_profit']) * position['size']
+                            position = None
 
-            # Backtest complete - generate report
-            print("\nBacktest Results:")
-            print(f"Starting Capital: {self.config['capital']:.2f}")
-            print(f"Ending Capital: {capital:.2f}")
-            print(f"Total Trades: {len(trades)}")
-            print(f"Final Summary: {self.llm_analyzer.summarize_text(str(trades))}")
-        
-        # captured_output = output_capture.getvalue()
-        # print("--- Backtest Summary ---")
-        # print(self.llm_analyzer.summarize_text(captured_output))
-        # print("-----------------------")
+                if not position:
+                    historical_15m_data = data_15m[data_15m.index <= index]
+                    sweep_direction = self.intraday_strategy.detect_liquidity_sweep(historical_15m_data)
+
+                    if sweep_direction and sweep_direction == self.daily_bias:
+                        signal = sweep_direction
+                        pattern = f"{sweep_direction} Liquidity Sweep"
+
+                        trade_price = row['close']
+                        risk_amount = capital * risk_per_trade
+                        position_size = risk_amount / (trade_price * 0.01)
+
+                        if signal == 'BULLISH':
+                            position = {
+                                'entry_price': trade_price,
+                                'size': position_size,
+                                'direction': 'long',
+                                'stop_loss': trade_price * 0.995,
+                                'take_profit': trade_price * 1.01
+                            }
+                            trades.append({'date': current_date, 'symbol': symbol, 'action': 'BUY', 'price': trade_price, 'size': position_size, 'pattern': pattern})
+                            print(f"BUY {position_size:.2f} shares at {trade_price:.2f}")
+                        elif signal == 'BEARISH':
+                            position = {
+                                'entry_price': trade_price,
+                                'size': position_size,
+                                'direction': 'short',
+                                'stop_loss': trade_price * 1.005,
+                                'take_profit': trade_price * 0.99
+                            }
+                            trades.append({'date': current_date, 'symbol': symbol, 'action': 'SELL', 'price': trade_price, 'size': position_size, 'pattern': pattern})
+                            print(f"SELL {position_size:.2f} shares at {trade_price:.2f}")
+
+            if position:
+                close_price = current_15m_data['close'].iloc[-1]
+                if position['direction'] == 'long':
+                    capital += (close_price - position['entry_price']) * position['size']
+                else:
+                    capital += (position['entry_price'] - close_price) * position['size']
+                print(f"Closing EOD position at {close_price:.2f}. New capital: {capital:.2f}")
+                position = None
+
+        print("\nBacktest Results:")
+        print(f"Starting Capital: {self.config['capital']:.2f}")
+        print(f"Ending Capital: {capital:.2f}")
+        print(f"Total Trades: {len(trades)}")
+        print(f"Final Summary: {self.llm_analyzer.summarize_text(str(trades))}")

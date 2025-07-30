@@ -115,11 +115,11 @@ class MultiTimeframeTrader:
                             return "HOLD", None, None, 0, "neutral", 0.0
             
             # Calculate EMAs for primary trend direction
-            primary_data['ema_short'] = self._calculate_ema(
+            primary_data.loc[:, 'ema_short'] = self._calculate_ema(
                 primary_data['close'], 
                 self.ema_short_period
             )
-            primary_data['ema_long'] = self._calculate_ema(
+            primary_data.loc[:, 'ema_long'] = self._calculate_ema(
                 primary_data['close'], 
                 self.ema_long_period
             )
@@ -139,7 +139,7 @@ class MultiTimeframeTrader:
                 trend_str = 0.0
             
             # Calculate ATR for secondary timeframe
-            secondary_data['atr'] = self._calculate_atr(secondary_data, self.atr_period)
+            secondary_data.loc[:, 'atr'] = self._calculate_atr(secondary_data, self.atr_period)
             
             # Get latest secondary candle
             latest_secondary = secondary_data.iloc[-1]

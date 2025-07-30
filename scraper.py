@@ -3,9 +3,10 @@ import time
 import random
 import argparse
 import logging
+import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from contextlib import contextmanager
 import pandas as pd
 import requests
@@ -39,12 +40,27 @@ class ScrapingConfig:
     element_timeout: int = 15
     respect_robots: bool = True
     rate_limit_delay: Tuple[float, float] = (2.0, 5.0)
-    user_data_dir: Optional[str] = None
-    profile_directory: Optional[str] = None
+    
     # CSS selectors for better maintainability
     table_selector: str = ".calendar__table"
     row_selector: str = "tr"
     cell_selector: str = "td"
+    requires_login: bool = False # New flag to indicate if login is required
+    login_url: str = "https://www.forexfactory.com/login" # Default login URL
+    username_env_var: str = "FOREX_FACTORY_USERNAME"
+    password_env_var: str = "FOREX_FACTORY_PASSWORD"
+    username_field_id: str = "login_username"
+    password_field_id: str = "login_password"
+    login_button_id: str = "input.button.button--pressable"
+    post_login_element_css: str = "meta[property='og:title'][content='Forums | Forex Factory']"
+    news_url: str = "https://www.forexfactory.com/news"
+    news_sections: dict = field(default_factory=lambda: {
+        "latest_stories": ".news__section--latest-stories",
+        "fundamental_analysis": ".news__section--fundamental-analysis",
+        "breaking_news": ".news__section--breaking-news",
+        "hottest_stories": ".news__section--hottest-stories",
+        "breaking_news_most_viewed": "ul.body.flexposts"
+    })
 
 class ForexCalendarScraper:
     """Enhanced Forex Factory Calendar Scraper with better practices"""
@@ -97,12 +113,18 @@ class ForexCalendarScraper:
         """Get a random modern user agent"""
         return random.choice(self.USER_AGENTS)
 
-    def setup_chrome_options(self, user_data_dir: Optional[str] = None, profile_directory: Optional[str] = None) -> Options:
-        """Configure Chrome options for better stability"""
-        options = Options()
+    
+
+    
+
+    
+
+    def _get_chrome_options_for_temp_profile(self) -> Options:
+        """Configures Chrome options for a temporary profile."""
+        options = uc.ChromeOptions()
         # Essential options
         options.add_argument(f"--user-agent={self.get_random_user_agent()}")
-        options.add_argument("--no-sandbox")
+        
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
         options.add_argument("--disable-blink-features=AutomationControlled")
@@ -110,15 +132,8 @@ class ForexCalendarScraper:
         # Performance options
         options.add_argument("--memory-pressure-off")
         options.add_argument("--max_old_space_size=4096")
-        # Privacy options
-        
-        
         # Set window size for consistency
         options.add_argument("--window-size=1920,1080")
-        if user_data_dir:
-            options.add_argument(f"--user-data-dir={user_data_dir}")
-        if profile_directory:
-            options.add_argument(f"--profile-directory={profile_directory}")
         return options
 
     @contextmanager
@@ -126,29 +141,27 @@ class ForexCalendarScraper:
         """Context manager for driver lifecycle"""
         driver = None
         try:
-            options = uc.ChromeOptions()
-            options.add_argument(f'--user-data-dir={self.config.user_data_dir}')
-            options.add_argument(f'--profile-directory={self.config.profile_directory}')
-            driver = uc.Chrome(options=options, use_subprocess=True)
-            logger.info("Using undetected_chromedriver.")
-            # Set timeouts
-            driver.set_page_load_timeout(self.config.page_load_timeout)
-            driver.implicitly_wait(5)
-            # Remove webdriver property
-            driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            logger.info("Attempting to launch Chrome with a temporary profile...")
+            time.sleep(1) # Add a small delay to allow Chrome to initialize
+            options = self._get_chrome_options_for_temp_profile()
+            driver = uc.Chrome(options=options, headless=False)
+            logger.info("undetected_chromedriver launched Chrome with a temporary profile.")
+            
+            logger.info("Yielding driver to the scraping process.")
             yield driver
+
         except Exception as e:
             logger.error(f"Driver initialization failed: {e}")
             raise
         finally:
             if driver:
+                logger.info("Attempting to quit Chrome driver.")
                 try:
-                    time.sleep(1) # Add a small delay for graceful shutdown
                     driver.quit()
-                    if driver.service.process:
-                        driver.service.stop()
+                    logger.info("Chrome driver quit successfully.")
                 except Exception as e:
                     logger.error(f"Error closing driver: {e}")
+            
 
     def human_like_delay(self):
         """Add human-like delays between actions"""
@@ -166,12 +179,12 @@ class ForexCalendarScraper:
 
             while current_position < total_height - viewport_height:
                 # Scroll with smooth behavior
-                driver.execute_script(f"""
+                driver.execute_script(f'''
                     window.scrollTo({{
                         top: {current_position + scroll_step},
                         behavior: 'smooth'
                     }});
-                """)
+                ''')
                 current_position += scroll_step
                 time.sleep(random.uniform(0.5, 1.5))
 
@@ -282,31 +295,20 @@ class ForexCalendarScraper:
             logger.error(f"Error scraping calendar data: {e}")
         return data
 
-    def save_data(self, data: List[Dict[str, str]], month: str, year: str) -> str:
-        """Save scraped data to CSV file"""
+    def save_data_to_json(self, data: dict, filename: str) -> str:
+        """Save scraped data to a JSON file."""
         if not data:
-            logger.warning("No data to save")
+            logger.warning(f"No data to save to {filename}")
             return ""
         try:
-            # Create output directory
             os.makedirs(self.config.output_dir, exist_ok=True)
-
-            # Create DataFrame and clean data
-            df = pd.DataFrame(data)
-            # Basic data cleaning
-            df = df.dropna(how='all')  # Remove completely empty rows
-            df = df.drop_duplicates()  # Remove exact duplicates
-
-            # Generate filename with timestamp
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"{self.config.output_dir}/forex_calendar_{month}_{year}_{timestamp}.csv"
-
-            # Save to CSV
-            df.to_csv(filename, index=False, encoding='utf-8')
-            logger.info(f"Data saved to {filename} ({len(df)} records)")
-            return filename
+            filepath = os.path.join(self.config.output_dir, filename)
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
+            logger.info(f"Data saved to {filepath} ({len(data)} records)")
+            return filepath
         except Exception as e:
-            logger.error(f"Error saving data: {e}")
+            logger.error(f"Error saving data to {filename}: {e}")
             return ""
 
     def calculate_target_month(self, month_name: Optional[str] = None) -> Tuple[str, str]:
@@ -364,38 +366,185 @@ class ForexCalendarScraper:
         else:
             raise Exception("All retry attempts failed with no data")
 
-    def get_news(self, target_month: Optional[str] = None) -> List[Dict[str, str]]:
-        """Scrapes calendar data and returns it as a list of dictionaries."""
+    def scrape_news_data(self, driver) -> Dict[str, List[Dict[str, str]]]:
+        """Scrapes news data from the Forex Factory news page."""
+        all_news_data = {}
+        try:
+            logger.info(f"Navigating to news URL: {self.config.news_url}")
+            driver.get(self.config.news_url)
+            self.human_like_delay()
+
+            wait = WebDriverWait(driver, self.config.element_timeout)
+
+            for section_name, section_selector in self.config.news_sections.items():
+                logger.info(f"Attempting to scrape news section: {section_name} using selector: {section_selector}")
+                try:
+                    # Wait for the section to be present
+                    section_element = wait.until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, section_selector))
+                    )
+                    logger.info(f"Found news section: {section_name}")
+
+                    # Find individual news items within the section
+                    news_items = section_element.find_elements(By.CSS_SELECTOR, ".flexposts__story, .flexposts__item")
+                    logger.info(f"Found {len(news_items)} news items in section {section_name}")
+
+                    section_news = []
+                    for item in news_items:
+                        try:
+                            # Extract headline and link
+                            headline_element = item.find_element(By.CSS_SELECTOR, ".flexposts__title a, .flexposts__story-title a")
+                            headline = headline_element.text.strip()
+                            link = headline_element.get_attribute("href")
+
+                            # Extract date/time
+                            news_time = ""
+                            try:
+                                time_element = item.find_element(By.CSS_SELECTOR, ".flexposts__time")
+                                news_time = time_element.text.strip()
+                            except NoSuchElementException:
+                                timestamp = item.get_attribute("data-timestamp")
+                                if timestamp:
+                                    news_time = datetime.fromtimestamp(int(timestamp)).isoformat()
+
+                            # Extract impact
+                            impact = ""
+                            try:
+                                impact_element = item.find_element(By.CSS_SELECTOR, ".flexposts__storyimpact")
+                                impact = " ".join(impact_element.get_attribute("class").split())
+                            except NoSuchElementException:
+                                pass
+
+                            # Extract summary
+                            summary = ""
+                            try:
+                                summary_element = item.find_element(By.CSS_SELECTOR, ".flexposts__preview .fader__original")
+                                summary = summary_element.text.strip()
+                            except NoSuchElementException:
+                                pass
+
+                            # Extract comments
+                            comments = ""
+                            try:
+                                comments_element = item.find_element(By.CSS_SELECTOR, ".flexposts__caption a")
+                                comments = comments_element.text.strip()
+                            except NoSuchElementException:
+                                pass
+
+
+                            # You might need to extract more details like summary, author, etc.
+                            section_news.append({
+                                "section": section_name,
+                                "headline": headline,
+                                "link": link,
+                                "time": news_time,
+                                "impact": impact,
+                                "summary": summary,
+                                "comments": comments
+                                # Add more fields as needed
+                            })
+                        except NoSuchElementException:
+                            logger.warning("Could not find expected elements within a news item. Skipping.")
+                            continue
+                        except Exception as e:
+                            logger.warning(f"Error processing news item: {e}")
+                            continue
+                    all_news_data[section_name] = section_news
+
+                except TimeoutException:
+                    logger.warning(f"Timeout waiting for news section: {section_name}. Skipping this section.")
+                except NoSuchElementException:
+                    logger.warning(f"Could not find news section: {section_name} using selector {section_selector}. Skipping.")
+                except Exception as e:
+                    logger.error(f"Error scraping news section {section_name}: {e}")
+                    logger.exception("Full traceback for news section scraping error:")
+                    continue
+
+        except Exception as e:
+            logger.error(f"Error navigating to or scraping news page: {e}")
+            logger.exception("Full traceback for news page scraping error:")
+        return all_news_data
+
+    def get_news(self, target_month: Optional[str] = None) -> Tuple[List[Dict[str, str]], Dict[str, List[Dict[str, str]]]]:
+        """Scrapes calendar data and news data and returns them."""
         try:
             if not self.check_robots_txt():
                 logger.error("Scraping may violate robots.txt. Aborting.")
-                return []
+                return [], {}
 
             month, year = self.calculate_target_month(target_month)
             use_current = target_month is None
 
-            url = self.build_calendar_url(month, year, use_current)
-            logger.info(f"Target: {month} {year}")
-            logger.info(f"URL: {url}")
+            calendar_url = self.build_calendar_url(month, year, use_current)
+            logger.info(f"Target Calendar URL: {calendar_url}")
+
+            scraped_calendar_events = []
+            scraped_news_data = {}
 
             with self.get_driver() as driver:
-                data = self.scrape_with_retries(driver, url, month, year)
+                if self.config.requires_login:
+                    logger.info("Attempting to log in...")
+                    driver.get(self.config.login_url)
 
-            if data:
-                logger.info(f"Scraping completed successfully. {len(data)} events found.")
-                return data
+                    try:
+                        username_field = WebDriverWait(driver, self.config.element_timeout).until(
+                            EC.presence_of_element_located((By.ID, self.config.username_field_id))
+                        )
+                        password_field = driver.find_element(By.ID, self.config.password_field_id)
+                        login_button = driver.find_element(By.CSS_SELECTOR, self.config.login_button_id)
+
+                        username_field.send_keys(os.getenv(self.config.username_env_var))
+                        password_field.send_keys(os.getenv(self.config.password_env_var))
+                        login_button.click()
+
+                        WebDriverWait(driver, self.config.element_timeout).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, self.config.post_login_element_css))
+                        )
+                        logger.info("Login successful.")
+                        time.sleep(5) # Wait for 5 seconds after successful login
+
+                    except TimeoutException as e:
+                        logger.error(f"Login failed: Timeout waiting for login elements or post-login page. Exception: {e}")
+                        logger.exception("Full traceback for TimeoutException during login:")
+                        raise
+                    except NoSuchElementException as e:
+                        logger.error(f"Login failed: Could not find username, password, or login button. Exception: {e}")
+                        logger.exception("Full traceback for NoSuchElementException during login:")
+                        raise
+                    except Exception as e:
+                        logger.error(f"An unexpected error occurred during login: {e}")
+                        logger.exception("Full traceback for unexpected Exception during login:")
+                        raise
+
+                # Scrape calendar data
+                logger.info(f"Navigating to calendar URL: {calendar_url}")
+                scraped_calendar_events = self.scrape_with_retries(driver, calendar_url, month, year)
+
+                # Scrape news data
+                scraped_news_data = self.scrape_news_data(driver)
+
+            if scraped_calendar_events or scraped_news_data:
+                logger.info(f"Scraping completed successfully. {len(scraped_calendar_events)} calendar events and {sum(len(v) for v in scraped_news_data.values())} news items found.")
+                return scraped_calendar_events, scraped_news_data
             else:
-                logger.error("No data was scraped")
-                return []
+                logger.error("No data was scraped from either calendar or news.")
+                return [], {}
 
         except Exception as e:
             logger.error(f"Scraping failed: {e}")
-            return []
+            logger.exception("Full traceback for scraping failure:")
+            return [], {}
 
-    def main():
-        config = ScrapingConfig()
-        scraper = ForexCalendarScraper(config)
-        news_data = scraper.get_news()
-        print(json.dumps(news_data))
+def main():
+    config = ScrapingConfig()
+    scraper = ForexCalendarScraper(config)
+    calendar_data, news_data = scraper.get_news()
+    
+    # Save the data to JSON files
+    if calendar_data:
+        scraper.save_data_to_json({"calendar_data": calendar_data}, "calendar_data.json")
+    if news_data:
+        scraper.save_data_to_json({"news_data": news_data}, "news_data.json")
 
-if __name__ == "_
+if __name__ == "__main__":
+    main()
