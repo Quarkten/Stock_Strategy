@@ -71,8 +71,12 @@ This trading system stands out due to several professional attributes:
 ## Features
 
 -   **Multi-Timeframe Trading**:
-    -   15min for entry signals
+    -   5–15min for entry signals (configurable)
     -   1-hour for trend confirmation
+-   **Modular Entry Engine (New)**:
+    -   Momentum continuation setup (EMA20 slope, MACD histogram trend, price vs EMA20/VWAP)
+    -   Mean reversion to VWAP/Bands setup (Bollinger extremes with reversion)
+    -   Soft daily bias weighting (UNCERTAIN reduces size instead of blocking)
 -   **Advanced Pattern Detection**:
     -   Liquidity Sweeps
     -   Inverse Fair Value Gaps (FVG)
@@ -80,7 +84,11 @@ This trading system stands out due to several professional attributes:
     -   Bullish Flag Patterns
     -   PDRA Alignment
 -   **Reinforcement Learning**: PPO agents for trade execution
--   **Risk Management**: Position sizing based on trend strength and pattern reliability
+-   **Risk Management**:
+    - Position sizing based on fixed risk-per-trade and per-share risk
+    - ATR-based stops/targets with default 1.0 ATR stop and ~1.8 ATR target
+    - Breakeven move after +1R
+    - Daily max loss halt applied per-day in backtests
 -   **Multiple Data Sources**: Support for Alpha Vantage, Alpaca, Polygon, and Finnhub
 -   **Economic Calendar Integration**: Scrapes data from Forex Factory for comprehensive market analysis
 
@@ -121,8 +129,9 @@ This section details the purpose of key files and directories within the project
         *   `finnhub_data.py`: Fetches data from Finnhub.
         *   `polygon_data.py`: Fetches data from Polygon.
         *   `database.py`: Manages the SQLite database.
-    *   `execution/`: Contains trade execution logic.
+    *   `execution/`: Contains trade execution logic and historical backtesting.
         *   `alpaca_executor.py`: Executes trades through the Alpaca API.
+        *   `backtester.py`: Historical backtest engine used when --start/--end are provided. Loads data, filters RTH, iterates day-by-day, manages positions, and records trades.
     *   `strategies/`: Contains trading strategy implementations.
         *   `intraday_strategy.py`: Implements the core intraday trading strategy based on ICT principles.
         *   `multi_timeframe.py`: Implements multi-timeframe analysis.
@@ -217,12 +226,28 @@ graph TD
     Executes trades based on multi-timeframe analysis.
     Manages risk and position sizing.
 
-*   **Backtesting**
-    ```bash
-    python run.py --backtest --symbol SPY --start 20230101 --end 20231231
-    ```
-    Backtests strategy on historical data.
-    Generates performance reports.
+*   **Backtesting (historical, date-ranged)**
+```bash
+# Example: full-year 2023 SPY on 5-minute bars, RTH only, write master trades CSV
+python run.py --symbol SPY --timeframe 5min --start 20230101 --end 20231231 --rth-only --csv-out data/trades_master.csv
+```
+What this does:
+- Uses the new historical backtester wired via [python.backtest_main()](run.py:135) and [python.Backtester](src/execution/backtester.py:1)
+- Iterates day-by-day across the specified date range
+- Applies an RTH filter (09:30–16:00 America/New_York) if --rth-only is set
+- Evaluates modular entries each bar using [python.IntradayStrategy.evaluate_entry()](src/strategies/intraday_strategy.py:520)
+- Enforces per-day daily max loss halt and continues to the next day
+- Saves trades to a master CSV if --csv-out provided and prints a summary at the end
+
+CLI flags (new):
+- --start YYYYMMDD, --end YYYYMMDD: historical date range (required together for backtest mode)
+- --symbol SYMBOL: symbol (default from config target_symbol)
+- --timeframe: bar size, e.g. 1min, 5min, 15min, 1h, 1day
+- --rth-only: filter to Regular Trading Hours (09:30–16:00)
+- --capital: override starting capital
+- --daily-max-loss-pct: override daily stop percent, e.g. 0.015
+- --risk-per-trade-pct: override per-trade risk percent, e.g. 0.005
+- --csv-out: path to append per-trade rows, e.g. data/trades_master.csv
 
 ## Configuration
 
@@ -401,6 +426,16 @@ Configure the system by setting up your API keys and other parameters:
 
 ## Running the System
 
+### New: Historical Backtester quick start
+To run a historical backtest with increased trade opportunities and realistic risk handling:
+```bash
+python run.py --symbol SPY --timeframe 5min --start 20230101 --end 20231231 --rth-only --csv-out data/trades_master.csv
+```
+Tips:
+- If your data provider ignores start/end, the backtester will still filter the loaded data locally by date range.
+- If you see very few trades, check provider data coverage and timeframe, and confirm RTH filtering aligns with your instrument’s session.
+- Daily halts occur per day when cumulative P&L hits the configured daily_max_loss. The engine resumes on the next trading day.
+
 Once installed and configured, you can run the system using the `run.py` script with various arguments:
 
 *   **Daily Pre-Market Setup** (e.g., 8:00 AM EST):
@@ -415,11 +450,16 @@ Once installed and configured, you can run the system using the `run.py` script 
     ```
     This initiates the real-time trading loop, where the system executes trades based on multi-timeframe analysis, manages risk, and dynamically sizes positions.
 
-*   **Backtesting**:
-    ```bash
-    python run.py --backtest --symbol SPY --start 20230101 --end 20231231
-    ```
-    Use this command to backtest the strategy on historical data for a specified symbol and date range. The system will generate performance reports based on the simulated trades.
+*   **Backtesting (date-ranged)**:
+```bash
+python run.py --symbol SPY --timeframe 5min --start 20230101 --end 20231231 --rth-only --csv-out data/trades_master.csv
+```
+This uses the new historical backtester. It will:
+- compute a soft-weighted daily bias via [python.IntradayStrategy.evaluate_daily_bias_tjr_style()](src/strategies/intraday_strategy.py:66)
+- evaluate entries each bar via [python.IntradayStrategy.evaluate_entry()](src/strategies/intraday_strategy.py:520)
+- manage positions with ATR stops/targets and breakeven
+- enforce per-day daily loss limits and continue to the next day
+- append per-trade rows to data/trades_master.csv if provided
 
 ## Customizing Configuration
 
