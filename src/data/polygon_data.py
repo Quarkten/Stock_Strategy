@@ -14,22 +14,30 @@ class PolygonData:
         self.config = config
         load_dotenv() # Load environment variables from .env file
 
-        self.api_key = os.getenv('POLYGON_API_KEY')
+        # Prefer env var; fallback to config key if provided
+        self.api_key = os.getenv('POLYGON_API_KEY') or self.config.get('polygon_api_key')
 
         if not self.api_key:
-            print("Warning: Polygon API key not found in environment variables. Please set POLYGON_API_KEY.")
-            # For testing, you might hardcode it, but it's not recommended for production
-            # self.api_key = 'YOUR_POLYGON_API_KEY'
+            logging.error("Polygon API key missing. Set POLYGON_API_KEY in env or polygon_api_key in config/config.yaml.")
+            # Defer client init; methods will raise clearer error
+            self.client = None
+            return
 
         # Initialize Polygon client
-        self.client = RESTClient(self.api_key)
+        try:
+            self.client = RESTClient(self.api_key)
+        except Exception as e:
+            logging.error(f"Failed to initialize Polygon RESTClient: {e}")
+            self.client = None
 
-    def get_historical_data(self, symbol, interval='1D', period='1y'):
+    def get_historical_data(self, symbol, interval='1D', start=None, end=None, period='1y'):
         """
         Fetch historical data from Polygon.
         Intervals: 1Min, 5Min, 15Min, 1H, 1D
         """
         try:
+            if self.client is None:
+                raise RuntimeError("Polygon REST client is not initialized due to missing/invalid API key.")
             print(f"Fetching data for {symbol} with interval {interval} from Polygon...")
 
             # Map intervals to Polygon intervals (adjust based on actual Polygon API client)
@@ -52,24 +60,40 @@ class PolygonData:
                 logging.warning(f"Unsupported interval for Polygon: {interval}. Defaulting to 1D.")
                 timespan = 'day'
 
-            # Calculate start and end dates based on period
-            end_date = datetime.now()
-            if period == '1mo':
-                start_date = end_date - timedelta(days=30)
-            elif period == '1y':
-                start_date = end_date - timedelta(days=365)
-            elif period == '5y':
-                start_date = end_date - timedelta(days=5 * 365)
-            elif period == '10y':
-                start_date = end_date - timedelta(days=10 * 365)
-            elif period == '20y':
-                start_date = end_date - timedelta(days=20 * 365)
-            elif period == '60d':
-                start_date = end_date - timedelta(days=60)
-            else: # Default to 1 year
-                start_date = end_date - timedelta(days=365)
+            # Determine date range: prefer explicit start/end if provided; otherwise derive from period
+            if start is not None and end is not None:
+                # Accept common formats: 'YYYYMMDD', 'YYYY-MM-DD', datetime
+                def _parse_date(d):
+                    if isinstance(d, datetime):
+                        return d
+                    s = str(d)
+                    try:
+                        if len(s) == 8 and s.isdigit():
+                            return datetime.strptime(s, "%Y%m%d")
+                        return datetime.fromisoformat(s)
+                    except Exception:
+                        # Fallback: treat as already acceptable string and let API handle; but keep as datetime if possible
+                        return datetime.fromisoformat(s)
+                start_date = _parse_date(start)
+                end_date = _parse_date(end)
+            else:
+                end_date = datetime.now()
+                if period == '1mo':
+                    start_date = end_date - timedelta(days=30)
+                elif period == '1y':
+                    start_date = end_date - timedelta(days=365)
+                elif period == '5y':
+                    start_date = end_date - timedelta(days=5 * 365)
+                elif period == '10y':
+                    start_date = end_date - timedelta(days=10 * 365)
+                elif period == '20y':
+                    start_date = end_date - timedelta(days=20 * 365)
+                elif period == '60d':
+                    start_date = end_date - timedelta(days=60)
+                else: # Default to 1 year
+                    start_date = end_date - timedelta(days=365)
 
-            # Convert dates to milliseconds timestamp for Polygon API (adjust if client handles this)
+            # Polygon REST API expects ISO date strings for from_/to
             from_date_str = start_date.strftime('%Y-%m-%d')
             to_date_str = end_date.strftime('%Y-%m-%d')
 

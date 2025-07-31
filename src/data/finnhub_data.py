@@ -21,7 +21,7 @@ class FinnhubData:
         # Initialize Finnhub client (uncomment and adjust if you have a specific client library)
         self.client = finnhub.Client(api_key=self.api_key)
 
-    def get_historical_data(self, symbol, interval='1D', period='1y'):
+    def get_historical_data(self, symbol, interval='1D', start=None, end=None, period='1y'):
         """
         Fetch historical data from Finnhub.
         Finnhub's historical data is typically for candles (OHLCV).
@@ -47,21 +47,42 @@ class FinnhubData:
             finnhub_interval = finnhub_interval_map.get(interval, 'D')
 
             # Calculate start and end timestamps
-            end_timestamp = int(datetime.now().timestamp())
-            if period == '1mo':
-                start_timestamp = int((datetime.now() - timedelta(days=30)).timestamp())
-            elif period == '1y':
-                start_timestamp = int((datetime.now() - timedelta(days=365)).timestamp())
-            elif period == '5y':
-                start_timestamp = int((datetime.now() - timedelta(days=5 * 365)).timestamp())
-            elif period == '10y':
-                start_timestamp = int((datetime.now() - timedelta(days=10 * 365)).timestamp())
-            elif period == '20y':
-                start_timestamp = int((datetime.now() - timedelta(days=20 * 365)).timestamp())
-            elif period == '60d':
-                start_timestamp = int((datetime.now() - timedelta(days=60)).timestamp())
-            else: # Default to 1 year
-                start_timestamp = int((datetime.now() - timedelta(days=365)).timestamp())
+            def _parse_to_dt(val):
+                if val is None:
+                    return None
+                if isinstance(val, datetime):
+                    return val
+                s = str(val)
+                try:
+                    if len(s) == 8 and s.isdigit():
+                        return datetime.strptime(s, "%Y%m%d")
+                    return datetime.fromisoformat(s)
+                except Exception:
+                    try:
+                        return pd.to_datetime(s).to_pydatetime()
+                    except Exception:
+                        return None
+
+            end_dt = _parse_to_dt(end) or datetime.now()
+            start_dt = _parse_to_dt(start)
+            if start_dt is None:
+                if period == '1mo':
+                    start_dt = end_dt - timedelta(days=30)
+                elif period == '1y':
+                    start_dt = end_dt - timedelta(days=365)
+                elif period == '5y':
+                    start_dt = end_dt - timedelta(days=5 * 365)
+                elif period == '10y':
+                    start_dt = end_dt - timedelta(days=10 * 365)
+                elif period == '20y':
+                    start_dt = end_dt - timedelta(days=20 * 365)
+                elif period == '60d':
+                    start_dt = end_dt - timedelta(days=60)
+                else: # Default to 1 year
+                    start_dt = end_dt - timedelta(days=365)
+
+            start_timestamp = int(start_dt.timestamp())
+            end_timestamp = int(end_dt.timestamp())
 
             res = self.client.stock_candles(symbol, finnhub_interval, start_timestamp, end_timestamp)
 

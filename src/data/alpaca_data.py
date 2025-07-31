@@ -61,9 +61,26 @@ class AlpacaData:
             }
             alpaca_interval = alpaca_interval_map.get(interval, '1D')
 
+            # Normalize start/end to datetime if provided as strings
+            def _to_dt(x):
+                if x is None:
+                    return None
+                if isinstance(x, datetime):
+                    return x
+                try:
+                    s = str(x)
+                    if len(s) == 8 and s.isdigit():
+                        return datetime.strptime(s, "%Y%m%d")
+                    return datetime.fromisoformat(s)
+                except Exception:
+                    try:
+                        return pd.to_datetime(x)
+                    except Exception:
+                        return None
+
             if start and end:
-                start_date = start
-                end_date = end
+                start_date = _to_dt(start) or datetime.now() - timedelta(days=365)
+                end_date = _to_dt(end) or datetime.now()
             else:
                 end_date = datetime.now()
                 if period == '1mo':

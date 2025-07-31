@@ -89,7 +89,8 @@ This trading system stands out due to several professional attributes:
     - ATR-based stops/targets with default 1.0 ATR stop and ~1.8 ATR target
     - Breakeven move after +1R
     - Daily max loss halt applied per-day in backtests
--   **Multiple Data Sources**: Support for Alpha Vantage, Alpaca, Polygon, and Finnhub
+- **Multiple Data Sources**: Support for Alpha Vantage, Alpaca, Polygon, and Finnhub
+- **Provider Fallbacks (New)**: If the selected provider fails (e.g., invalid API key), the system automatically falls back to alternative providers (Alpaca, then Finnhub) to keep workflows running
 -   **Economic Calendar Integration**: Scrapes data from Forex Factory for comprehensive market analysis
 
 ## Project Structure and Data Storage
@@ -155,6 +156,11 @@ pip install -r requirements.txt
 ```bash
 cp .env.example .env
 # Edit .env with your API keys
+# Example keys (do not use test or S3 flatfiles for Polygon):
+ALPACA_API_KEY=your_key
+ALPACA_SECRET_KEY=your_secret
+POLYGON_API_KEY=your_polygon_rest_api_key  # REST market data key, not S3 flatfiles
+FINNHUB_API_KEY=your_finnhub_key
 ```
 3.  Run the system:
 ```bash
@@ -179,6 +185,7 @@ graph TD
 *   Python 3.10+
 *   Chrome browser (for scraping functionality)
 *   API Keys: Required for fetching market data. You'll need keys for Alpha Vantage, Alpaca, Polygon, and/or Finnhub depending on which data sources you plan to use.
+  - Polygon: Use the REST API key from the Polygon dashboard (not the S3 flatfiles Access Key). If a Polygon REST key is missing or invalid, the app will automatically fall back to Alpaca and then Finnhub when fetching data.
 *   Ollama (for local LLMs) - Optional
 
 ### Steps
@@ -432,6 +439,7 @@ To run a historical backtest with increased trade opportunities and realistic ri
 python run.py --symbol SPY --timeframe 5min --start 20230101 --end 20231231 --rth-only --csv-out data/trades_master.csv
 ```
 Tips:
+- If your configured provider fails (e.g., Polygon “Unknown API Key”), the runner automatically falls back to Alpaca, then Finnhub, so the backtest can proceed with available data.
 - If your data provider ignores start/end, the backtester will still filter the loaded data locally by date range.
 - If you see very few trades, check provider data coverage and timeframe, and confirm RTH filtering aligns with your instrument’s session.
 - Daily halts occur per day when cumulative P&L hits the configured daily_max_loss. The engine resumes on the next trading day.
@@ -623,6 +631,15 @@ python run.py
 
 # New: Configuration Details
 
+Provider selection and fallbacks:
+- Primary provider is chosen by config or environment. If the chosen provider fails (e.g., Polygon “Unknown API Key”), DataFetcher automatically falls back to Alpaca, then Finnhub.
+- Start/end handling is normalized. Even if a provider doesn’t accept start/end, the backtester slices the loaded data locally to the requested date range.
+
+Known provider nuances:
+- Polygon: Requires a valid REST API key; S3 flatfiles credentials will not work for the REST client.
+- Alpaca: Intraday endpoints require ISO datetime; this project normalizes string dates (YYYYMMDD) for you.
+- Finnhub: Accepts start/end and converts them to epoch internally in this project.
+
 - Runtime settings: [config/config.yaml](config/config.yaml)
   - Adjust risk parameters, timeframes, data providers, and feature toggles.
 - Secrets/credentials: [config/secrets.yaml](config/secrets.yaml)
@@ -668,6 +685,12 @@ Strategy selection:
 - If you introduce new datasets, keep them under [data/](data/) with clear subfolders.
 
 # New: Environment Variables
+
+Provider keys and notes:
+- ALPACA_API_KEY, ALPACA_SECRET_KEY
+- POLYGON_API_KEY  (REST market data key only; do not use S3 flatfiles Access/Secret)
+- FINNHUB_API_KEY
+- Optional: Configure fallback preferences in [python.DataFetcher.fetch_data()](src/utils/data_fetcher.py:98) via config data_source and environment variables.
 
 Common variables you might need to set (names are examples; do not include real secrets):
 - ALPACA_API_KEY, ALPACA_API_SECRET
