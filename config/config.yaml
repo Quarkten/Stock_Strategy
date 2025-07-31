@@ -3,7 +3,8 @@ num_top_stocks: 1
 target_symbol: SPY
 timezone: America/New_York
 capital: 100000
-risk_per_trade: 0.01
+risk_per_trade: 0.005
+daily_max_loss: 0.015
 
 # Data Source Configuration
 data_source: "polygon" # Options: "alpha_vantage", "yahoo_finance", "alpaca", "polygon", "finnhub"
