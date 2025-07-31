@@ -1,7 +1,9 @@
 import yaml
 import logging
+import argparse
 from datetime import datetime
 import pandas as pd
+from typing import Optional
 
 from src.strategies.intraday_strategy import IntradayStrategy
 from scraper import ForexCalendarScraper, ScrapingConfig
@@ -94,7 +96,6 @@ class TradingApplication:
         })
         logging.info(f"Simulated trade executed. Outcome: {trade_outcome}. Total daily loss: {self.daily_loss}")
 
-
     def run_post_market_review(self):
         """
         Executes the post-market routine for logging and performance analysis.
@@ -126,12 +127,63 @@ class TradingApplication:
         trades_df.to_csv(log_file, index=False)
         logging.info(f"Trade log saved to {log_file}")
 
-
     def run(self):
         self.run_premarket_preparation()
         self.run_trading_session()
         self.run_post_market_review()
 
-if __name__ == "__main__":
+def parse_args():
+    parser = argparse.ArgumentParser(description="Trading/backtest runner")
+    parser.add_argument("--start", type=str, help="Backtest start date YYYYMMDD")
+    parser.add_argument("--end", type=str, help="Backtest end date YYYYMMDD")
+    parser.add_argument("--symbol", type=str, help="Symbol, e.g., SPY")
+    parser.add_argument("--timeframe", type=str, help="Timeframe, e.g., 5m, 15m, 1h, 1day")
+    parser.add_argument("--rth-only", action="store_true", help="Filter to Regular Trading Hours")
+    parser.add_argument("--capital", type=float, help="Starting capital")
+    parser.add_argument("--daily-max-loss-pct", type=float, help="Daily max loss percent (e.g. 0.015)")
+    parser.add_argument("--risk-per-trade-pct", type=float, help="Risk per trade percent (e.g. 0.005)")
+    parser.add_argument("--csv-out", type=str, help="Path to master CSV for trades")
+    return parser.parse_args()
+
+def backtest_main(args):
+    # Lazy import to avoid hard dependency in demo mode
+    from src.execution.backtester import Backtester
+
     app = TradingApplication()
-    app.run()
+    cfg = app.config.copy()
+
+    # Merge CLI overrides
+    symbol = args.symbol or cfg.get("target_symbol", "SPY")
+    timeframe = args.timeframe or cfg.get("strategy", {}).get("params", {}).get("secondary_timeframe", cfg.get("timeframes", {}).get("short_term", ["5min"])[0])
+    capital = args.capital if args.capital is not None else cfg.get("capital", 100000)
+    daily_max_loss_pct = args.daily_max_loss_pct if args.daily_max_loss_pct is not None else cfg.get("daily_max_loss", 0.015)
+    risk_per_trade_pct = args.risk_per_trade_pct if args.risk_per_trade_pct is not None else cfg.get("risk_per_trade", 0.005)
+    csv_out = args.csv_out or "data/trades_master.csv"
+    rth_only = bool(args.rth_only)
+
+    # Update strategy finance params for backtest
+    cfg["capital"] = capital
+    cfg["daily_max_loss"] = daily_max_loss_pct
+    cfg["risk_per_trade"] = risk_per_trade_pct
+
+    strategy = IntradayStrategy(cfg)
+    data_fetcher = DataFetcher(cfg)
+
+    bt = Backtester(strategy=strategy,
+                    data_fetcher=data_fetcher,
+                    config=cfg,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    start=args.start,
+                    end=args.end,
+                    rth_only=rth_only,
+                    csv_out=csv_out)
+    bt.run()
+
+if __name__ == "__main__":
+    args = parse_args()
+    if args.start and args.end:
+        backtest_main(args)
+    else:
+        app = TradingApplication()
+        app.run()

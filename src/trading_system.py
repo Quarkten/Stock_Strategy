@@ -131,6 +131,7 @@ class TradingSystem:
             scraper = ForexCalendarScraper(config=scraper_config)
             
             calendar_data, news_data = scraper.get_news()
+            del scraper # Explicitly delete the scraper object to encourage earlier garbage collection
             
             # Format the scraped data for the LLM
             print("\n[3/5] Formatting scraped data for LLM...")

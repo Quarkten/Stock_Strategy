@@ -2,15 +2,22 @@ import pandas as pd
 import numpy as np
 
 import logging
+from typing import Optional, Dict, Any
 
 class IntradayStrategy:
     def __init__(self, config):
         self.config = config
-        self.logger = config.get('logger', logging.getLogger(__name__))
+        self.logger = logging.getLogger(__name__)
         self.capital = self.config.get('capital', 100000)
         self.daily_max_loss_pct = self.config.get('daily_max_loss', 0.015)
         self.risk_per_trade_pct = self.config.get('risk_per_trade', 0.005)
         self.daily_pnl = 0.0
+        # Backtest-tunable params (fallbacks if not in config.backtest)
+        bt = (self.config or {}).get("backtest", {})
+        self.atr_period = int(bt.get("atr_period", self.config.get("strategy", {}).get("params", {}).get("atr_period", 14)))
+        self.n_stop_atr = float(bt.get("n_stop_atr", self.config.get("strategy", {}).get("params", {}).get("atr_multiplier", 1.0)))
+        self.n_tp_atr = float(bt.get("n_tp_atr", 1.8))
+        self.breakeven_r = float(bt.get("breakeven_r", 1.0))
 
     def calculate_position_size(self, entry_price, stop_loss_price):
         """
@@ -57,13 +64,15 @@ class IntradayStrategy:
     def evaluate_daily_bias_tjr_style(self, spy_daily_data, spy_weekly_data, spy_4h_data, spy_1h_data):
         print("Evaluating daily bias (TJR Style) with actual data...")
 
-        if spy_daily_data.empty or len(spy_daily_data) < 21:
-            return "UNCERTAIN"
+        if spy_daily_data is None or spy_daily_data.empty or len(spy_daily_data) < 21:
+            # Soft default: uncertain with reduced size
+            return {"bias_label": "UNCERTAIN", "bias_weight": 0.5, "reasons": ["insufficient_daily_data"]}
 
         # --- EMA Trend ---
+        spy_daily_data = spy_daily_data.copy()
         spy_daily_data.loc[:, 'ema20'] = spy_daily_data['close'].ewm(span=20, adjust=False).mean()
-        last_close = spy_daily_data['close'].iloc[-1]
-        last_ema = spy_daily_data['ema20'].iloc[-1]
+        last_close = float(spy_daily_data['close'].iloc[-1])
+        last_ema = float(spy_daily_data['ema20'].iloc[-1])
 
         trend_bias = "BULLISH" if last_close > last_ema else "BEARISH"
 
@@ -75,13 +84,15 @@ class IntradayStrategy:
         elif yesterday_candle['close'] < yesterday_candle['open']:
             candle_bias = "BEARISH"
 
-        # --- Combine Biases ---
+        # --- Combine Biases (soft) ---
+        reasons = [f"trend_bias:{trend_bias}", f"candle_bias:{candle_bias}"]
         if trend_bias == candle_bias:
             print(f"  > Trend bias ({trend_bias}) and candle bias ({candle_bias}) are aligned.")
-            return trend_bias
+            return {"bias_label": trend_bias, "bias_weight": 1.0, "reasons": reasons}
         else:
             print(f"  > Trend bias ({trend_bias}) and candle bias ({candle_bias}) are not aligned.")
-            return "UNCERTAIN"
+            # Soften to half size instead of blocking
+            return {"bias_label": "UNCERTAIN", "bias_weight": 0.5, "reasons": reasons}
 
     def detect_bullish_flag(self, data):
         print("Detecting bullish flag...")
@@ -467,6 +478,168 @@ class IntradayStrategy:
                         print(f"  > Position {position['id']} stop trailed to {new_stop}.")
 
         return open_positions
+
+    # -----------------------------
+    # Modular signals and entry evaluation for backtester
+    # -----------------------------
+    def _momentum_signal(self, df: pd.DataFrame) -> float:
+        """
+        Momentum score: EMA20 slope up, close above EMA20, MACD histogram rising.
+        Returns score in [0,1].
+        """
+        if df is None or len(df) < 30:
+            return 0.0
+        recent = df.iloc[-1]
+        prev = df.iloc[-2] if len(df) >= 2 else recent
+        ema20 = recent.get("ema20", np.nan)
+        prev_ema20 = prev.get("ema20", np.nan)
+        macd = recent.get("macd_hist", np.nan)
+        prev_macd = prev.get("macd_hist", np.nan)
+
+        score = 0.0
+        if not np.isnan(ema20) and not np.isnan(prev_ema20) and ema20 > prev_ema20:
+            score += 0.4
+        if not np.isnan(ema20) and recent["close"] > ema20:
+            score += 0.4
+        if not np.isnan(macd) and not np.isnan(prev_macd) and macd > prev_macd:
+            score += 0.2
+        return min(1.0, max(0.0, score))
+
+    def _mean_reversion_signal(self, df: pd.DataFrame) -> float:
+        """
+        Mean reversion score: distance beyond Bollinger Band and revert towards VWAP/EMA.
+        Returns score in [0,1].
+        """
+        if df is None or len(df) < 30:
+            return 0.0
+        recent = df.iloc[-1]
+        prev = df.iloc[-2] if len(df) >= 2 else recent
+        close = float(recent["close"])
+        bb_u = float(recent.get("bb_upper", np.nan)) if not np.isnan(recent.get("bb_upper", np.nan)) else np.nan
+        bb_l = float(recent.get("bb_lower", np.nan)) if not np.isnan(recent.get("bb_lower", np.nan)) else np.nan
+        vwap = float(recent.get("vwap", np.nan)) if not np.isnan(recent.get("vwap", np.nan)) else np.nan
+
+        score = 0.0
+        # Above upper band and reverting down
+        if not np.isnan(bb_u) and close > bb_u and prev["close"] > close:
+            score = max(score, 0.6)
+        # Below lower band and reverting up
+        if not np.isnan(bb_l) and close < bb_l and prev["close"] < close:
+            score = max(score, 0.6)
+        # VWAP gravity
+        if not np.isnan(vwap):
+            dist = abs(close - vwap)
+            rng = max(1e-6, abs(recent["high"] - recent["low"]))
+            rel = min(1.0, dist / rng)
+            score += 0.2 * (1.0 - rel)
+        return min(1.0, max(0.0, score))
+
+    def _volatility_cap(self, df: pd.DataFrame) -> float:
+        """
+        Volatility regime cap derived from ATR over close.
+        Returns a multiplier in (0,1].
+        """
+        if df is None or len(df) < 30:
+            return 0.5
+        recent = df.iloc[-1]
+        atr = float(recent.get("atr", np.nan)) if not np.isnan(recent.get("atr", np.nan)) else np.nan
+        close = float(recent["close"])
+        if np.isnan(atr) or close <= 0:
+            return 0.7
+        ratio = min(1.0, max(0.1, atr / close * 50.0))  # heuristic scaling
+        return 1.0 - 0.5 * ratio
+
+    def evaluate_entry(self, df: pd.DataFrame, state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Decide on an entry using modular signals.
+        Expects df with indicator columns up to current bar (last row is current).
+        Returns dict with keys:
+          side, entry_price, stop_price, target_price, size_multiplier, setup_name, reasons, signal_scores
+        """
+        if df is None or df.empty:
+            return None
+        recent = df.iloc[-1]
+        atr = float(state.get("atr") or recent.get("atr", np.nan))
+        if np.isnan(atr) or atr <= 0:
+            return None
+
+        bias_label = state.get("bias_label", "UNCERTAIN")
+        bias_weight = float(state.get("bias_weight", 0.5))
+
+        mom = self._momentum_signal(df)
+        mr = self._mean_reversion_signal(df)
+        vol_cap = self._volatility_cap(df)
+        ema20 = float(recent.get("ema20", np.nan)) if not np.isnan(recent.get("ema20", np.nan)) else np.nan
+        vwap = float(recent.get("vwap", np.nan)) if not np.isnan(recent.get("vwap", np.nan)) else np.nan
+        close = float(recent["close"])
+
+        reasons = []
+        setup_name = None
+        side = None
+
+        # Setup A: Momentum continuation (leaner gating)
+        if ((bias_label == "BULLISH" and mom >= 0.5 and (np.isnan(ema20) or close >= ema20)) or
+            (bias_label == "UNCERTAIN" and mom >= 0.7 and (np.isnan(ema20) or close >= ema20))):
+            side = "LONG"
+            setup_name = "momentum_continuation"
+            reasons.append(f"mom_score:{mom:.2f}")
+        elif ((bias_label == "BEARISH" and mom >= 0.5 and (np.isnan(ema20) or close <= ema20)) or
+              (bias_label == "UNCERTAIN" and mom >= 0.7 and (np.isnan(ema20) or close <= ema20))):
+            side = "SHORT"
+            setup_name = "momentum_continuation"
+            reasons.append(f"mom_score:{mom:.2f}")
+
+        # Setup B: Mean reversion to VWAP/Bands (alternative OR path)
+        if setup_name is None and mr >= 0.6:
+            if not np.isnan(vwap):
+                if close > vwap:
+                    side = "SHORT"
+                elif close < vwap:
+                    side = "LONG"
+            else:
+                # fallback by bands
+                bb_u = float(recent.get("bb_upper", np.nan)) if not np.isnan(recent.get("bb_upper", np.nan)) else np.nan
+                bb_l = float(recent.get("bb_lower", np.nan)) if not np.isnan(recent.get("bb_lower", np.nan)) else np.nan
+                if not np.isnan(bb_u) and close > bb_u:
+                    side = "SHORT"
+                if not np.isnan(bb_l) and close < bb_l:
+                    side = "LONG"
+            if side:
+                setup_name = "mean_reversion_vwap_bbands"
+                reasons.append(f"mr_score:{mr:.2f}")
+
+        if setup_name is None or side is None:
+            return None
+
+        # ATR-based stop/target
+        n_stop = float(state.get("config", {}).get("n_stop_atr", self.n_stop_atr))
+        n_tp = float(state.get("config", {}).get("n_tp_atr", self.n_tp_atr))
+        if side == "LONG":
+            entry = close
+            stop = entry - n_stop * atr
+            target = entry + n_tp * atr
+        else:
+            entry = close
+            stop = entry + n_stop * atr
+            target = entry - n_tp * atr
+
+        size_multiplier = max(0.1, min(1.0, bias_weight * vol_cap * (0.5 + 0.5 * max(mom, mr))))
+
+        return {
+            "side": side,
+            "entry_price": float(entry),
+            "stop_price": float(stop),
+            "target_price": float(target),
+            "size_multiplier": float(size_multiplier),
+            "setup_name": setup_name,
+            "reasons": reasons,
+            "signal_scores": {
+                "momentum": float(mom),
+                "mean_rev": float(mr),
+                "vol_cap": float(vol_cap),
+            },
+            "atr": float(atr),
+        }
 
     # -----------------------------
     # New simple detectors (unit-test oriented)

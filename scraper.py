@@ -161,6 +161,8 @@ class ForexCalendarScraper:
                     logger.info("Chrome driver quit successfully.")
                 except Exception as e:
                     logger.error(f"Error closing driver: {e}")
+                finally:
+                    driver = None # Ensure the driver object is dereferenced
             
 
     def human_like_delay(self):
