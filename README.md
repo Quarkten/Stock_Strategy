@@ -1,5 +1,31 @@
 # RL Trader
 
+<!-- Table of Contents -->
+## Table of Contents
+- [RL Trader](README.md)
+  - [Professional-Grade Algorithmic Trading System](README.md)
+  - [How the Code Works](README.md)
+  - [Why This Code is Professional](README.md)
+  - [Features](README.md)
+  - [Project Structure and Data Storage](README.md)
+  - [Setup](README.md)
+  - [System Architecture](README.md)
+  - [Installation](README.md)
+  - [Usage](README.md)
+  - [Configuration](README.md)
+  - [Documentation](README.md)
+  - [Trading Strategy Documentation](README.md)
+  - [Special Time Logic](README.md)
+  - [Strategy Structure](README.md)
+  - [Implementation Plan](README.md)
+  - [New: Quick Start Setup](README.md)
+  - [New: Configuration Details](README.md)
+  - [New: Running](README.md)
+  - [New: Strategy Overview](README.md)
+  - [New: Data](README.md)
+  - [New: Environment Variables](README.md)
+  - [New: Troubleshooting](README.md)
+
 ## Professional-Grade Algorithmic Trading System
 
 This project presents a sophisticated algorithmic trading system built on robust technical analysis and advanced reinforcement learning. Designed for precision and adaptability, it offers a professional-grade solution for automated market analysis and trade execution.
@@ -524,3 +550,113 @@ Reinforcement Learning (RL) plays a crucial role in refining and optimizing the 
 *   **Logger + dashboard**: Save reasons for entry, timeframes, model answers, price levels.
 
 This comprehensive strategy, combining multi-timeframe analysis, advanced pattern recognition based on ICT principles, and intelligent reinforcement learning, positions the RL Trader system as a professional-grade solution for algorithmic trading.
+
+---
+
+# New: Quick Start Setup
+
+Recommended: Python 3.10+
+
+1) Create and activate a virtual environment (Windows CMD):
+```
+python -m venv .venv
+.\.venv\Scripts\activate
+```
+
+2) Install dependencies:
+```
+pip install -r requirements.txt
+```
+
+3) TA-Lib on Windows (required by talib)
+- Prefer prebuilt wheels or conda packages for TA-Lib binary.
+- A local TA-Lib source tree exists under [ta-lib/](ta-lib/), but typical users should install the TA-Lib binary first so the Python package (ta-lib) can load its native libs.
+- See official install docs: https://ta-lib.org/ (use appropriate Windows instructions or prebuilt wheels).
+- If using conda: `conda install -c conda-forge ta-lib`
+
+4) Configure credentials and runtime settings (see sections below).
+
+5) Run:
+```
+python run.py
+```
+
+# New: Configuration Details
+
+- Runtime settings: [config/config.yaml](config/config.yaml)
+  - Adjust risk parameters, timeframes, data providers, and feature toggles.
+- Secrets/credentials: [config/secrets.yaml](config/secrets.yaml)
+  - Store API keys (e.g., Alpha Vantage, Alpaca, Polygon, Finnhub). Do not commit real secrets.
+- Optional environment file: [.env](.env)
+  - If you prefer environment variables, define API keys here (or in your shell). The code may read environment variables even when using YAML-based secrets.
+
+Examples:
+- Update general behavior in [config/config.yaml](config/config.yaml).
+- Put API keys in [config/secrets.yaml](config/secrets.yaml) or set environment variables before running.
+
+# New: Running
+
+Default run:
+```
+python run.py
+```
+
+If command-line arguments are supported, they can be passed as needed. If unknown, use the defaults above and adjust behavior in [config/config.yaml](config/config.yaml).
+
+Data ingestion (scraper):
+```
+python scraper.py
+```
+Use [scraper.py](scraper.py) to fetch/scrape economic calendar/news as needed.
+
+Strategy selection:
+- If strategy/mode flags exist, pass them to [run.py](run.py). Otherwise, configure defaults in [config/config.yaml](config/config.yaml) and add or modify strategies under [src/strategies/](src/strategies/).
+
+# New: Strategy Overview
+
+- Example strategy implementation: [src/strategies/intraday_strategy.py](src/strategies/intraday_strategy.py)
+  - Purpose: intraday trading based on ICT principles with multi-timeframe analysis and pattern detection.
+- Add new strategies in: [src/strategies/](src/strategies/)
+  - Create a new Python file and integrate it via configuration and/or the main runner [run.py](run.py).
+- Methodology reference: [docs/trading_plan.md](docs/trading_plan.md)
+
+# New: Data
+
+- Project data folder: [data/](data/)
+  - Databases/live or historical artifacts may be stored under [data/database/](data/database/).
+- Models produced by RL training: [models/](models/)
+- If you introduce new datasets, keep them under [data/](data/) with clear subfolders.
+
+# New: Environment Variables
+
+Common variables you might need to set (names are examples; do not include real secrets):
+- ALPACA_API_KEY, ALPACA_API_SECRET
+- ALPHA_VANTAGE_API_KEY
+- POLYGON_API_KEY
+- FINNHUB_API_KEY
+
+Set in your shell or in [.env](.env). If also using [config/secrets.yaml](config/secrets.yaml), ensure values are consistent.
+
+# New: Troubleshooting
+
+TA-Lib on Windows
+- Error: “talib/_ta_lib.c:…” or missing ta_lib.dll
+  - Install TA-Lib binary first (conda-forge ta-lib or prebuilt wheel matching your Python/arch).
+  - Confirm the ta-lib DLL is discoverable on PATH or installed via conda.
+  - Reinstall the Python package: `pip install --force-reinstall ta-lib`
+
+Virtual environment and pip issues
+- If installs fail or resolve to wrong interpreter:
+  - Ensure venv is active: `.\.venv\Scripts\activate`
+  - Clear build cache and retry: `pip cache purge` then `pip install -r requirements.txt`
+  - Pin versions as needed in [requirements.txt](requirements.txt)
+
+Runtime/config issues
+- If the app can’t find API keys:
+  - Verify [.env](.env) or [config/secrets.yaml](config/secrets.yaml) contains the keys.
+  - Confirm your terminal session has the environment variables exported before running.
+- If behavior doesn’t match expectations:
+  - Adjust [config/config.yaml](config/config.yaml) and rerun.
+  - Check logs/output for hints (see any logging setup under src/utils if present).
+
+```
