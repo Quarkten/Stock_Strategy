@@ -1,0 +1,53 @@
+# RL-specific configuration, merged over config/config.yaml by train_rl_agent.py
+seed: 42
+
+env:
+  max_position_size_shares: 100000
+  max_leverage: 1.0
+  per_trade_max_loss_r: 1.2
+  max_time_stop_bars: 48
+  max_bars_per_episode: 20000
+  cooldown_after_dd_spike_bars: 20
+  dd_spike_threshold_pct: 0.01  # 1% equity drawdown spike triggers cooldown
+
+reward:
+  loss_clip_r: -1.0
+  loss_penalty_scale: 1.25
+  tail_loss_penalty_scale: 0.75
+  gain_knee_r: 1.5
+  tail_gain_scale: 2.0
+  dd_penalty_scale: 0.25
+  mae_penalty_scale: 0.05
+  mae_floor_r: 0.5
+  size_penalty_scale: 0.02
+  time_penalty_scale: 0.005
+  loss_aversion_lambda: 1.8
+  alpha_gain: 0.88
+  beta_loss: 0.88
+  min_reward: -5.0
+  max_reward: 10.0
+
+training:
+  algo: ppo
+  timesteps: 100000
+  ppo:
+    learning_rate: 0.0003
+    batch_size: 2048
+  sac:
+    learning_rate: 0.0003
+    batch_size: 256
+
+replay:
+  r_edges: [-1e9, -1.0, 0.0, 1.0, 2.0, 1e9]
+  regime_labels: [LOW_VOL, MED_VOL, HIGH_VOL]
+  alpha: 0.6
+  beta: 0.4
+  eps: 1.0e-6
+  capacity: 200000
+
+backtest_costs:
+  slippage_ticks: 0.01
+  fee_per_share: 0.0
+  spread_widen_prob: 0.0
+  spread_widen_ticks: 0.02
+  latency_bars: 0

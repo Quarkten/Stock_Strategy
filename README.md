@@ -246,6 +246,18 @@ What this does:
 - Enforces per-day daily max loss halt and continues to the next day
 - Saves trades to a master CSV if --csv-out provided and prints a summary at the end
 
+*   **Training an RL Agent**
+```bash
+# Example: train a PPO agent on SPY 5-minute bars for 2023
+python train_rl_agent.py --agent ppo --symbol SPY --timeframe 5min --start 20230101 --end 20231231 --timesteps 10000
+```
+
+*   **Evaluating an RL Agent**
+```bash
+# Example: evaluate a trained PPO agent
+python train_rl_agent.py --agent ppo --symbol SPY --timeframe 5min --start 20240101 --end 20240131 --timesteps 0 --eval-only
+```
+
 CLI flags (new):
 - --start YYYYMMDD, --end YYYYMMDD: historical date range (required together for backtest mode)
 - --symbol SYMBOL: symbol (default from config target_symbol)
@@ -486,6 +498,47 @@ timeframes:
 ```
 
 For more detailed information on the system's architecture, API, and trading strategy, refer to the `docs/` directory.
+
+## Reinforcement Learning Framework
+
+This project includes a reinforcement learning framework for optimizing the trading strategy. The framework is built on top of OpenAI Gym and Stable Baselines3.
+
+### Training an Agent
+
+To train an RL agent, use the `train_rl_agent.py` script. This script allows you to train a PPO or SAC agent on a given stock, timeframe, and date range.
+
+```bash
+# Example: train a PPO agent on SPY 5-minute bars for 2023
+python train_rl_agent.py --agent ppo --symbol SPY --timeframe 5min --start 20230101 --end 20231231 --timesteps 10000
+```
+
+The trained model will be saved to the `models/` directory.
+
+### Evaluating an Agent
+
+You can compute summary trading metrics (including win/loss percentages and average win) from a trades CSV via the evaluation script:
+
+```bash
+python scripts/evaluate.py --symbol SPY --timeframe 5min --start 20230101 --end 20230331 --rth-only --csv-out data/trades_master.csv
+```
+
+Example JSON output fields include:
+```json
+{
+  "win_pct": 53.8971807628524,
+  "loss_pct": 46.1028192371476,
+  "avg_win": 245.76226153846184
+}
+```
+
+To evaluate a trained RL agent, you can also use the `evaluation.ipynb` notebook. This notebook provides a comprehensive analysis of the agent's performance, including:
+
+*   Performance metrics (PnL, Sharpe ratio, etc.)
+*   Trade analysis (R-multiple distribution, etc.)
+*   Risk analysis (tail events, etc.)
+*   Visualizations (equity curve, etc.)
+
+To use the notebook, you will need to update the file paths to the backtest results for the baseline strategy and the trained RL agents.
 
 # Trading Strategy Documentation
 

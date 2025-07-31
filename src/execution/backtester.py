@@ -1,52 +1,79 @@
 import logging
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any, Tuple
-import pandas as pd
+from typing import Optional, Dict, Any, List, Tuple
 import numpy as np
-from datetime import datetime
-from zoneinfo import ZoneInfo
+import pandas as pd
+from datetime import datetime, time, timedelta
+import random
+import os
 
-logger = logging.getLogger(__name__)
+# This backtester is designed to match run.py expectations and integrate with IntradayStrategy.evaluate_entry
+# It supports:
+# - Data loading via DataFetcher (already in project)
+# - Feature engineering (minimal inline; can be moved to src/utils/features.py later)
+# - Day-by-day iteration with RTH filter
+# - ATR-based stops/targets with breakeven, trailing placeholder
+# - Simple slippage/fees/latency model
+# - Daily max loss halt
+# - Reproducibility via seed
+# - CSV logging of trades
+#
+# Key interfaces:
+#   bt = Backtester(strategy, data_fetcher, config, symbol, timeframe, start, end, rth_only, csv_out)
+#   bt.run()
+#
+# Assumptions:
+# - DataFetcher exposes fetch_data(symbol, timeframe, start=None, end=None, limit=None) returning DataFrame with columns:
+#   ['timestamp','open','high','low','close','volume'] or index as datetime
+# - IntradayStrategy.evaluate_entry expects a df with indicator columns present on last row if used.
 
 
 @dataclass
-class BacktesterConfig:
-    symbol: str
-    timeframe: str
-    start: str
-    end: str
-    rth_only: bool = True
-    csv_out: str = "data/trades_master.csv"
-    tz: str = "America/New_York"
-    # Indicator params (defaults; may be overridden by strategy/config)
-    atr_period: int = 14
-    bb_period: int = 20
-    bb_std: float = 2.0
-    n_stop_atr: float = 1.0
-    n_tp_atr: float = 1.8
-    breakeven_r: float = 1.0
-    loss_streak_pause: int = 3
-    fill_policy: str = "next_open"  # "next_open" or "bar_close"
+class CostModel:
+    slippage_ticks: float = 0.0         # price units per trade side
+    fee_per_share: float = 0.0          # fee per share
+    spread_widen_prob: float = 0.0      # probability of spread widening event
+    spread_widen_ticks: float = 0.0     # additional slippage during widening
+    latency_bars: int = 0               # bars between decision and execution
+    seed: int = 42
+
+    def apply_slippage(self, price: float, side: str, rng: random.Random) -> float:
+        slip = self.slippage_ticks
+        # occasional spread widening
+        if rng.random() < self.spread_widen_prob:
+            slip += self.spread_widen_ticks
+        if side.upper() == "BUY" or side.upper() == "LONG":
+            return price + slip
+        return price - slip
 
 
 @dataclass
-class Position:
-    side: str  # "LONG" or "SHORT"
-    entry_time: pd.Timestamp
-    entry_price: float
-    stop_price: float
-    target_price: float
-    size: int
+class RiskLimits:
+    capital: float
+    risk_per_trade_pct: float
+    daily_max_loss_pct: float
+    max_leverage: float = 1.0
+    max_position_risk_multiple: float = 1.0  # max initial R per trade
+
+
+@dataclass
+class TradeRecord:
+    entry_time: datetime
+    exit_time: datetime
+    side: str
+    entry: float
+    exit: float
+    stop: float
+    target: float
+    shares: float
+    pnl: float
+    r_multiple: float
+    mae_r: float
+    mfe_r: float
+    duration_bars: int
     setup_name: str
-    reasons: List[str] = field(default_factory=list)
-    signal_scores: Dict[str, float] = field(default_factory=dict)
-    exit_time: Optional[pd.Timestamp] = None
-    exit_price: Optional[float] = None
-    pnl: Optional[float] = None
-    r_multiple: Optional[float] = None
-
-    def initial_risk(self) -> float:
-        return abs(self.entry_price - self.stop_price)
+    reasons: str
+    regime: str
 
 
 class Backtester:
@@ -54,368 +81,515 @@ class Backtester:
         self,
         strategy,
         data_fetcher,
-        config: dict,
+        config: Dict[str, Any],
         symbol: str,
         timeframe: str,
-        start: str,
-        end: str,
+        start: Optional[str],
+        end: Optional[str],
         rth_only: bool = True,
-        csv_out: str = "data/trades_master.csv",
+        csv_out: Optional[str] = None,
+        cost_model: Optional[Dict[str, Any]] = None,
+        seed: int = 42,
     ):
+        self.logger = logging.getLogger(__name__)
         self.strategy = strategy
         self.data_fetcher = data_fetcher
-        self.config = config
-        self.params = BacktesterConfig(
-            symbol=symbol,
-            timeframe=timeframe,
-            start=start,
-            end=end,
-            rth_only=rth_only,
-            csv_out=csv_out,
+        self.config = config or {}
+        self.symbol = symbol
+        self.timeframe = timeframe
+        self.start = start
+        self.end = end
+        self.rth_only = rth_only
+        self.csv_out = csv_out or "data/trades_master.csv"
+        self.rng = random.Random(seed)
+
+        # Risk
+        capital = float(self.config.get("capital", 100000))
+        risk_per_trade = float(self.config.get("risk_per_trade", 0.005))
+        daily_max_loss = float(self.config.get("daily_max_loss", 0.015))
+        self.risk = RiskLimits(
+            capital=capital,
+            risk_per_trade_pct=risk_per_trade,
+            daily_max_loss_pct=daily_max_loss,
         )
-        # Load strategy-related numeric params if present
-        strat_params = (config or {}).get("strategy", {}).get("params", {})
-        self.params.atr_period = int(strat_params.get("atr_period", self.params.atr_period))
-        self.params.n_stop_atr = float(config.get("atr_multiplier", config.get("strategy", {}).get("params", {}).get("atr_multiplier", self.params.n_stop_atr)))
-        # bb defaults
-        self.params.bb_period = int(config.get("backtest", {}).get("bb_period", self.params.bb_period))
-        self.params.bb_std = float(config.get("backtest", {}).get("bb_std", self.params.bb_std))
-        # risk control defaults
-        self.params.breakeven_r = float(config.get("backtest", {}).get("breakeven_r", self.params.breakeven_r))
-        self.params.loss_streak_pause = int(config.get("backtest", {}).get("loss_streak_pause", self.params.loss_streak_pause))
-        self.params.fill_policy = str(config.get("backtest", {}).get("fill_policy", self.params.fill_policy))
 
-        # Finance params mirrored from strategy/config for convenience
-        self.capital = float(config.get("capital", 100000))
-        self.daily_max_loss_pct = float(config.get("daily_max_loss", 0.015))
-        self.risk_per_trade_pct = float(config.get("risk_per_trade", 0.005))
-
-        self.trades: List[Dict[str, Any]] = []
-        self.tz = ZoneInfo(self.params.tz)
-
-    # ------------- Indicators -------------
-    @staticmethod
-    def _ema(series: pd.Series, span: int) -> pd.Series:
-        return series.ewm(span=span, adjust=False).mean()
-
-    @staticmethod
-    def _atr(df: pd.DataFrame, period: int) -> pd.Series:
-        high = df["high"]
-        low = df["low"]
-        close = df["close"]
-        prev_close = close.shift(1)
-        tr = pd.concat(
-            [(high - low).abs(), (high - prev_close).abs(), (low - prev_close).abs()],
-            axis=1,
-        ).max(axis=1)
-        return tr.rolling(window=period, min_periods=period).mean()
-
-    @staticmethod
-    def _bbands(close: pd.Series, period: int, std_mult: float) -> Tuple[pd.Series, pd.Series, pd.Series]:
-        ma = close.rolling(window=period, min_periods=period).mean()
-        sd = close.rolling(window=period, min_periods=period).std()
-        upper = ma + std_mult * sd
-        lower = ma - std_mult * sd
-        return ma, upper, lower
-
-    @staticmethod
-    def _vwap(df: pd.DataFrame) -> pd.Series:
-        pv = df["close"] * df.get("volume", 0)
-        cum_pv = pv.cumsum()
-        cum_vol = df.get("volume", pd.Series(0, index=df.index)).cumsum().replace(0, np.nan)
-        return cum_pv / cum_vol
-
-    @staticmethod
-    def _macd_hist(close: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> pd.Series:
-        ema_fast = close.ewm(span=fast, adjust=False).mean()
-        ema_slow = close.ewm(span=slow, adjust=False).mean()
-        macd = ema_fast - ema_slow
-        macd_signal = macd.ewm(span=signal, adjust=False).mean()
-        return macd - macd_signal
-
-    def _ensure_tz(self, df: pd.DataFrame) -> pd.DataFrame:
-        if not isinstance(df.index, pd.DatetimeIndex):
-            return df
-        if df.index.tz is None:
-            df.index = df.index.tz_localize(self.tz)
-        else:
-            df.index = df.index.tz_convert(self.tz)
-        return df
-
-    def _filter_rth(self, df: pd.DataFrame) -> pd.DataFrame:
-        if df.empty:
-            return df
-        local = df.copy()
-        # Keep weekdays 0..4 and times between 09:30-16:00
-        mask_weekday = local.index.weekday <= 4
-        times = local.index.time
-        mask_time = (pd.Series(times, index=local.index) >= datetime.strptime("09:30:00", "%H:%M:%S").time()) & (
-            pd.Series(times, index=local.index) <= datetime.strptime("16:00:00", "%H:%M:%S").time()
+        # Cost model
+        cm = cost_model or {}
+        self.cost = CostModel(
+            slippage_ticks=float(cm.get("slippage_ticks", 0.01)),
+            fee_per_share=float(cm.get("fee_per_share", 0.0)),
+            spread_widen_prob=float(cm.get("spread_widen_prob", 0.0)),
+            spread_widen_ticks=float(cm.get("spread_widen_ticks", 0.02)),
+            latency_bars=int(cm.get("latency_bars", 0)),
+            seed=seed,
         )
-        return local[mask_weekday & mask_time]
 
-    def _preprocess_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        df = df.copy()
-        if df.empty:
-            return df
-        df["ema20"] = self._ema(df["close"], span=20)
-        df["atr"] = self._atr(df, period=self.params.atr_period)
-        bb_mid, bb_u, bb_l = self._bbands(df["close"], period=self.params.bb_period, std_mult=self.params.bb_std)
-        df["bb_mid"], df["bb_upper"], df["bb_lower"] = bb_mid, bb_u, bb_l
-        df["vwap"] = self._vwap(df)
-        df["macd_hist"] = self._macd_hist(df["close"])
-        # Warmup drop
-        warmup = max(20, self.params.atr_period, self.params.bb_period)
-        return df.iloc[warmup:].dropna()
+        # Runtime state
+        self.trades: List[TradeRecord] = []
+        self.daily_pnl = 0.0
+        self.current_day = None
 
-    def _load_data(self) -> pd.DataFrame:
-        logger.info(f"Loading data: {self.params.symbol} {self.params.timeframe} {self.params.start}..{self.params.end}")
-        # Try providers with explicit start/end if supported; our wrapper passes kwargs through
-        df = self.data_fetcher.fetch_data(
-            self.params.symbol,
-            self.params.timeframe,
-            provider=self.config.get("data_source"),
-            start=self.params.start,
-            end=self.params.end,
-        )
-        if df is None or df.empty:
-            logger.warning("Data fetch returned empty DataFrame.")
-            return pd.DataFrame()
-        df = self._ensure_tz(df)
-        # Local slice by dates (in tz)
-        try:
-            start_ts = pd.Timestamp(self.params.start).tz_localize(self.tz) if pd.Timestamp(self.params.start).tz is None else pd.Timestamp(self.params.start).tz_convert(self.tz)
-            end_ts = pd.Timestamp(self.params.end).tz_localize(self.tz) if pd.Timestamp(self.params.end).tz is None else pd.Timestamp(self.params.end).tz_convert(self.tz)
-            df = df[(df.index >= start_ts) & (df.index <= end_ts)]
-        except Exception:
-            # Fallback naive filter by date-only string
-            df = df[(df.index.strftime("%Y%m%d") >= self.params.start) & (df.index.strftime("%Y%m%d") <= self.params.end)]
-        if self.params.rth_only:
-            df = self._filter_rth(df)
-        return self._preprocess_indicators(df)
-
-    # ------------- Main run -------------
     def run(self):
         df = self._load_data()
-        if df.empty:
-            logger.error("No data to backtest.")
+        if df is None or df.empty:
+            self.logger.warning("No data loaded for backtest.")
             return
+        df = self._engineer_features(df)
 
-        # Day-wise grouping by local date
-        day_index = df.index.tz_convert(self.tz) if df.index.tz is not None else df.index
-        df = df.copy()
-        df["__mkt_date__"] = day_index.date
+        # Precompute daily bias using daily and 1h data where possible
+        daily_bias_map = self._compute_daily_bias()
 
-        all_days = sorted(df["__mkt_date__"].unique())
-        logger.info(f"Backtest days: {len(all_days)}")
+        # Iterate day-by-day
+        for day, day_df in df.groupby(df.index.date):
+            # reset daily loss
+            self.daily_pnl = 0.0
+            self.current_day = day
 
-        master_rows: List[Dict[str, Any]] = []
+            # optionally RTH filter 09:30–16:00
+            if self.rth_only:
+                day_df = self._filter_rth(day_df)
+                if day_df.empty:
+                    continue
 
-        for day in all_days:
-            day_slice = df[df["__mkt_date__"] == day].copy()
-            if day_slice.empty:
+            # Skip days with too few bars
+            if len(day_df) < 10:
                 continue
 
-            # Compute bias once per day using prior 1d/1h if available via DataFetcher
-            try:
-                prior_daily = self.data_fetcher.fetch_data(self.params.symbol, "1day", limit=100, provider=self.config.get("data_source"))
-                prior_1h = self.data_fetcher.fetch_data(self.params.symbol, "1h", limit=200, provider=self.config.get("data_source"))
-            except Exception:
-                prior_daily, prior_1h = pd.DataFrame(), pd.DataFrame()
+            open_positions: List[Dict[str, Any]] = []
 
-            bias_result = self.strategy.evaluate_daily_bias_tjr_style(prior_daily, None, None, prior_1h)
-            # Map to weight if legacy string
-            if isinstance(bias_result, str):
-                bias_label = bias_result
-                bias_weight = 1.0 if bias_label in ("BULLISH", "BEARISH") else 0.5
-                bias_reasons = [f"legacy_bias:{bias_label}"]
-            elif isinstance(bias_result, dict):
-                bias_label = bias_result.get("bias_label", "UNCERTAIN")
-                bias_weight = float(bias_result.get("bias_weight", 0.5))
-                bias_reasons = bias_result.get("reasons", [])
-            else:
-                bias_label, bias_weight, bias_reasons = "UNCERTAIN", 0.5, []
+            # Build state scaffold
+            bias = daily_bias_map.get(day, {"bias_label": "UNCERTAIN", "bias_weight": 0.5})
+            state: Dict[str, Any] = {
+                "bias_label": bias.get("bias_label", "UNCERTAIN"),
+                "bias_weight": float(bias.get("bias_weight", 0.5)),
+                "config": {
+                    "n_stop_atr": getattr(self.strategy, "n_stop_atr", 1.0),
+                    "n_tp_atr": getattr(self.strategy, "n_tp_atr", 1.8),
+                },
+            }
 
-            day_pnl = 0.0
-            consecutive_losses = 0
-            trading_halted = False
-            open_position: Optional[Position] = None
+            # Iterate bars
+            for i in range(len(day_df)):
+                # Daily max loss halt
+                if self.daily_pnl <= -(self.risk.daily_max_loss_pct * self.risk.capital):
+                    self.logger.info(f"{day} halted due to daily max loss.")
+                    break
 
-            for i in range(len(day_slice)):
-                bar_time = day_slice.index[i]
-                bar = day_slice.iloc[i]
+                window_df = day_df.iloc[: i + 1]
+                recent = window_df.iloc[-1]
 
-                # Manage open position exits by stop/target or EOD
-                if open_position is not None:
-                    hit_stop = (bar.low <= open_position.stop_price) if open_position.side == "LONG" else (bar.high >= open_position.stop_price)
-                    hit_target = (bar.high >= open_position.target_price) if open_position.side == "LONG" else (bar.low <= open_position.target_price)
+                # Manage existing positions first
+                if open_positions:
+                    open_positions = self._manage_positions(window_df, open_positions)
 
-                    # Breakeven move
-                    init_r = open_position.initial_risk()
-                    if init_r > 0:
-                        if open_position.side == "LONG":
-                            unreal = bar.high - open_position.entry_price
-                        else:
-                            unreal = open_position.entry_price - bar.low
-                        if unreal >= self.params.breakeven_r * init_r:
-                            # Move stop to entry if improves risk
-                            if open_position.side == "LONG" and open_position.stop_price < open_position.entry_price:
-                                open_position.stop_price = open_position.entry_price
-                            if open_position.side == "SHORT" and open_position.stop_price > open_position.entry_price:
-                                open_position.stop_price = open_position.entry_price
+                # Evaluate new entry
+                entry_sig = None
+                try:
+                    state["atr"] = float(recent.get("atr", np.nan))
+                    entry_sig = self.strategy.evaluate_entry(window_df, state)
+                except Exception as e:
+                    self.logger.exception("Error in evaluate_entry: %s", e)
 
-                    exit_now = False
-                    exit_price = None
-                    if hit_stop:
-                        exit_now = True
-                        # Fill policy
-                        exit_price = open_position.stop_price if self.params.fill_policy == "bar_close" else float(day_slice.iloc[i + 1].open) if i + 1 < len(day_slice) else float(bar.close)
-                    elif hit_target:
-                        exit_now = True
-                        exit_price = open_position.target_price if self.params.fill_policy == "bar_close" else float(day_slice.iloc[i + 1].open) if i + 1 < len(day_slice) else float(bar.close)
+                if entry_sig:
+                    # Convert to execution side and compute risk
+                    side = "LONG" if entry_sig["side"].upper() == "LONG" else "SHORT"
+                    entry_price = float(entry_sig["entry_price"])
+                    stop_price = float(entry_sig["stop_price"])
+                    target_price = float(entry_sig["target_price"])
+                    size_mult = float(entry_sig.get("size_multiplier", 1.0))
+                    atr = float(entry_sig.get("atr", recent.get("atr", np.nan)))
 
-                    # Exit on EOD at bar close
-                    is_last_bar = i == len(day_slice) - 1
-                    if not exit_now and is_last_bar:
-                        exit_now = True
-                        exit_price = float(bar.close)
+                    risk_per_share = abs(entry_price - stop_price)
+                    if risk_per_share <= 0 or np.isnan(risk_per_share):
+                        continue
 
-                    if exit_now:
-                        open_position.exit_time = bar_time if is_last_bar or self.params.fill_policy == "bar_close" else (day_slice.index[i + 1] if i + 1 < len(day_slice) else bar_time)
-                        open_position.exit_price = float(exit_price)
-                        # PnL
-                        if open_position.side == "LONG":
-                            pnl = (open_position.exit_price - open_position.entry_price) * open_position.size
-                        else:
-                            pnl = (open_position.entry_price - open_position.exit_price) * open_position.size
-                        r_mult = pnl / (open_position.initial_risk() * open_position.size) if open_position.initial_risk() > 0 else np.nan
-                        open_position.pnl = pnl
-                        open_position.r_multiple = r_mult
-                        day_pnl += pnl
-                        self.trades.append(self._trade_row_from_position(open_position, self.params.symbol, bias_weight))
+                    nominal_risk = self.risk.capital * self.risk.risk_per_trade_pct
+                    shares = max(0.0, (nominal_risk / risk_per_share) * size_mult)
 
-                        if pnl < 0:
-                            consecutive_losses += 1
-                            if consecutive_losses >= self.params.loss_streak_pause:
-                                trading_halted = True
-                        else:
-                            consecutive_losses = 0
+                    # Safety: cap position by risk_multiple and leverage (simple: skip leverage enforcement here)
+                    if (risk_per_share * shares) > (self.risk.max_position_risk_multiple * nominal_risk):
+                        # scale down
+                        scale = (self.risk.max_position_risk_multiple * nominal_risk) / max(1e-9, (risk_per_share * shares))
+                        shares *= scale
 
-                        open_position = None
+                    # Execution latency: shift execution bar
+                    exec_idx = i + max(0, self.cost.latency_bars)
+                    if exec_idx >= len(day_df):
+                        continue
+                    exec_bar = day_df.iloc[exec_idx]
+                    exec_price_raw = float(exec_bar["open"])  # assume next open
+                    exec_price = self.cost.apply_slippage(exec_price_raw, "BUY" if side == "LONG" else "SELL", self.rng)
 
-                # Daily risk halt check (pre-trade gate)
-                if trading_halted:
-                    continue
-                if day_pnl <= -(self.daily_max_loss_pct * self.capital):
-                    trading_halted = True
-                    continue
+                    # Fees
+                    entry_fee = shares * self.cost.fee_per_share
 
-                # If flat, look for entries
-                if open_position is None and not trading_halted:
-                    state = {
-                        "bias_label": bias_label,
-                        "bias_weight": bias_weight,
-                        "atr": float(bar.atr) if not np.isnan(bar.atr) else None,
-                        "bb_upper": float(bar.bb_upper) if not np.isnan(bar.bb_upper) else None,
-                        "bb_lower": float(bar.bb_lower) if not np.isnan(bar.bb_lower) else None,
-                        "vwap": float(bar.vwap) if not np.isnan(bar.vwap) else None,
-                        "ema20": float(bar.ema20) if not np.isnan(bar.ema20) else None,
-                        "macd_hist": float(bar.macd_hist) if not np.isnan(bar.macd_hist) else None,
-                        "config": {
-                            "n_stop_atr": self.params.n_stop_atr,
-                            "n_tp_atr": self.params.n_tp_atr,
-                        },
+                    position = {
+                        "id": f"{self.symbol}_{day}_{exec_idx}_{len(self.trades)+len(open_positions)}",
+                        "side": side,
+                        "entry_price": exec_price,
+                        "stop_loss": stop_price,
+                        "target": target_price,
+                        "shares": shares,
+                        "open_time": exec_bar.name.to_pydatetime() if hasattr(exec_bar, "name") else datetime.combine(day, time(9, 30)),
+                        "breakeven_r": getattr(self.strategy, "breakeven_r", 1.0),
+                        "atr": atr,
+                        "setup_name": entry_sig.get("setup_name", ""),
+                        "reasons": ";".join(entry_sig.get("reasons", [])),
+                        "mae": 0.0,
+                        "mfe": 0.0,
+                        "initial_risk": risk_per_share,
+                        "entry_fee": entry_fee,
                     }
-                    # Strategy evaluate_entry expected to consume df context. Provide slice up to i for context.
-                    context_df = day_slice.iloc[: i + 1]
-                    signal = getattr(self.strategy, "evaluate_entry", None)
-                    proposed = signal(context_df, state) if callable(signal) else None
+                    open_positions.append(position)
 
-                    if proposed:
-                        entry_price = float(proposed.get("entry_price", float(bar.close)))
-                        stop_price = float(proposed.get("stop_price", entry_price - (proposed.get("atr", bar.atr) or 1.0)))
-                        target_price = float(proposed.get("target_price", entry_price + (proposed.get("atr", bar.atr) or 1.8)))
-                        size_mult = float(proposed.get("size_multiplier", bias_weight))
-                        # Sizing
-                        per_share_risk = abs(entry_price - stop_price)
-                        risk_amount = self.capital * self.risk_per_trade_pct * max(0.1, min(1.0, size_mult))
-                        size = int(np.floor(risk_amount / per_share_risk)) if per_share_risk > 0 else 0
-                        if size <= 0:
-                            continue
+                # If positions exist, check exits on this bar close
+                if open_positions:
+                    open_positions = self._check_exits(day_df.iloc[: i + 1], open_positions)
 
-                        # Strategy risk gate
-                        if not self.strategy.check_risk_before_trade(entry_price, stop_price):
-                            continue
+            # Force close any positions at day end at last close
+            if open_positions:
+                last_bar = day_df.iloc[-1]
+                for pos in open_positions:
+                    exit_price = float(last_bar["close"])
+                    exit_fee = pos["shares"] * self.cost.fee_per_share
+                    pnl = (exit_price - pos["entry_price"]) * pos["shares"] if pos["side"] == "LONG" else (pos["entry_price"] - exit_price) * pos["shares"]
+                    pnl -= (pos.get("entry_fee", 0.0) + exit_fee)
+                    r_mult = pnl / max(1e-9, (pos["initial_risk"] * pos["shares"]))
+                    self.daily_pnl += pnl
+                    self._record_trade(
+                        entry_time=pos["open_time"],
+                        exit_time=last_bar.name.to_pydatetime() if hasattr(last_bar, "name") else datetime.combine(day, time(16, 0)),
+                        side=pos["side"],
+                        entry=pos["entry_price"],
+                        stop=pos["stop_loss"],
+                        target=pos["target"],
+                        exit=exit_price,
+                        shares=pos["shares"],
+                        pnl=pnl,
+                        r_mult=r_mult,
+                        mae_r=(pos["mae"] / max(1e-9, pos["initial_risk"])),
+                        mfe_r=(pos["mfe"] / max(1e-9, pos["initial_risk"])),
+                        duration_bars=len(day_df) - day_df.index.get_indexer([pos["open_time"]])[0] if hasattr(day_df.index, "get_indexer") else 0,
+                        setup_name=pos.get("setup_name", ""),
+                        reasons=pos.get("reasons", ""),
+                        regime=self._regime_from_features(last_bar),
+                    )
+                open_positions = []
 
-                        # Place position, fill at next bar open if configured
-                        if self.params.fill_policy == "next_open" and i + 1 < len(day_slice):
-                            fill_price = float(day_slice.iloc[i + 1].open)
-                            fill_time = day_slice.index[i + 1]
-                        else:
-                            fill_price = entry_price
-                            fill_time = bar_time
+        # Write CSV if requested
+        self._write_csv()
 
-                        open_position = Position(
-                            side="LONG" if proposed.get("side", "LONG").upper() == "LONG" else "SHORT",
-                            entry_time=fill_time,
-                            entry_price=fill_price,
-                            stop_price=stop_price,
-                            target_price=target_price,
-                            size=size,
-                            setup_name=proposed.get("setup_name", "unknown"),
-                            reasons=proposed.get("reasons", []),
-                            signal_scores=proposed.get("signal_scores", {}),
-                        )
+        # Print summary
+        self._summary()
 
-            # End for bars
-            # If any position remains, it was force-closed above at EOD
-
-        # After all days
-        self._finalize(csv_out=self.params.csv_out)
-
-    def _trade_row_from_position(self, pos: Position, symbol: str, bias_weight: float) -> Dict[str, Any]:
-        return {
-            "date": pos.entry_time.date() if isinstance(pos.entry_time, pd.Timestamp) else None,
-            "time": pos.entry_time.isoformat() if isinstance(pos.entry_time, pd.Timestamp) else None,
-            "symbol": symbol,
-            "setup": pos.setup_name,
-            "side": pos.side,
-            "entry": pos.entry_price,
-            "stop": pos.stop_price,
-            "target": pos.target_price,
-            "exit": pos.exit_price,
-            "pnl": pos.pnl,
-            "r_multiple": pos.r_multiple,
-            "size": pos.size,
-            "bias_weight": bias_weight,
-            "reasons": ";".join(pos.reasons or []),
-            "momentum_score": pos.signal_scores.get("momentum", np.nan) if pos.signal_scores else np.nan,
-            "mean_rev_score": pos.signal_scores.get("mean_rev", np.nan) if pos.signal_scores else np.nan,
-            "vol_cap": pos.signal_scores.get("vol_cap", np.nan) if pos.signal_scores else np.nan,
-            "pullback_score": pos.signal_scores.get("pullback", np.nan) if pos.signal_scores else np.nan,
-            "exit_time": pos.exit_time.isoformat() if isinstance(pos.exit_time, pd.Timestamp) else None,
-        }
-
-    def _finalize(self, csv_out: Optional[str] = None):
-        if not self.trades:
-            logger.info("No trades generated in backtest.")
-            return
-        trades_df = pd.DataFrame(self.trades)
-        # Summary
-        total_pnl = float(trades_df["pnl"].sum())
-        wins = trades_df[trades_df["pnl"] > 0]
-        win_rate = float(len(wins)) / float(len(trades_df)) if len(trades_df) > 0 else 0.0
-        avg_r = float(trades_df["r_multiple"].mean()) if "r_multiple" in trades_df.columns else np.nan
-        logger.info("--- Backtest Summary ---")
-        logger.info(f"Trades: {len(trades_df)} | WinRate: {win_rate:.2%} | Total PnL: {total_pnl:.2f} | Avg R: {avg_r:.2f}")
-
-        # Save
+    # ---------------------------
+    # Data and features
+    # ---------------------------
+    def _load_data(self) -> Optional[pd.DataFrame]:
         try:
-            # Append or create
-            if csv_out:
-                mode = "a" if pd.io.common.file_exists(csv_out) else "w"
-                header = not pd.io.common.file_exists(csv_out)
-                trades_df.to_csv(csv_out, index=False, mode=mode, header=header)
-                logger.info(f"Master trades CSV written to {csv_out}")
+            df = self.data_fetcher.fetch_data(self.symbol, self._normalize_timeframe(self.timeframe), start=self.start, end=self.end)
+            if df is None or df.empty:
+                return None
+            # Ensure datetime index
+            if "timestamp" in df.columns:
+                df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(self._tz())
+                df = df.set_index("timestamp").sort_index()
+            else:
+                if not isinstance(df.index, pd.DatetimeIndex):
+                    # try parse
+                    df.index = pd.to_datetime(df.index, utc=True).tz_convert(self._tz())
+                else:
+                    if df.index.tz is None:
+                        df.index = df.index.tz_localize("UTC").tz_convert(self._tz())
+            # Local slice in case provider ignores start/end
+            if self.start:
+                df = df[df.index.date >= datetime.strptime(self.start, "%Y%m%d").date()]
+            if self.end:
+                df = df[df.index.date <= datetime.strptime(self.end, "%Y%m%d").date()]
+            return df
         except Exception as e:
-            logger.error(f"Error writing master CSV: {e}")
+            self.logger.exception("Failed to load data: %s", e)
+            return None
+
+    def _engineer_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        out = df.copy()
+        # ATR
+        period = int(self.config.get("strategy", {}).get("params", {}).get("atr_period", 14))
+        high = out["high"].astype(float)
+        low = out["low"].astype(float)
+        close = out["close"].astype(float)
+        prev_close = close.shift(1)
+        tr = pd.concat([(high - low).abs(), (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+        out["atr"] = tr.rolling(window=period, min_periods=1).mean()
+
+        # EMA20
+        out["ema20"] = close.ewm(span=20, adjust=False).mean()
+
+        # EMA50
+        out["ema50"] = close.ewm(span=50, adjust=False).mean()
+
+        # MACD hist (12,26,9)
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
+        macd = ema12 - ema26
+        signal = macd.ewm(span=9, adjust=False).mean()
+        out["macd_hist"] = macd - signal
+
+        # Bollinger bands 20,2
+        sma20 = close.rolling(window=20, min_periods=1).mean()
+        std20 = close.rolling(window=20, min_periods=1).std(ddof=0)
+        out["bb_upper"] = sma20 + 2 * std20
+        out["bb_lower"] = sma20 - 2 * std20
+
+        # VWAP (session reset per day)
+        out["vwap"] = self._session_vwap(out)
+
+        # Simple volatility regime
+        out["vol_ratio"] = (out["atr"] / out["close"]).clip(lower=0.0)
+
+        return out
+
+    def _session_vwap(self, df: pd.DataFrame) -> pd.Series:
+        # Reset per day; vwap = cumsum(price*volume)/cumsum(volume)
+        vwap = []
+        cur_num = 0.0
+        cur_den = 0.0
+        cur_day = None
+        for idx, row in df.iterrows():
+            d = idx.date()
+            if cur_day != d:
+                cur_day = d
+                cur_num = 0.0
+                cur_den = 0.0
+            price = float(row["close"])
+            vol = float(row.get("volume", 1.0))
+            cur_num += price * vol
+            cur_den += vol if vol > 0 else 1.0
+            vwap.append(cur_num / max(1e-9, cur_den))
+        return pd.Series(vwap, index=df.index)
+
+    def _filter_rth(self, day_df: pd.DataFrame) -> pd.DataFrame:
+        # America/New_York session 09:30–16:00
+        start_t = time(9, 30)
+        end_t = time(16, 0)
+        return day_df[(day_df.index.time >= start_t) & (day_df.index.time <= end_t)]
+
+    def _compute_daily_bias(self) -> Dict[datetime.date, Dict[str, Any]]:
+        # Fetch daily and 1h for SPY only per current strategy
+        try:
+            spy_daily = self.data_fetcher.fetch_data(self.symbol, "1day", limit=100)
+            spy_1h = self.data_fetcher.fetch_data(self.symbol, "1hour", limit=100)
+            # Normalize timestamp
+            for d in (spy_daily, spy_1h):
+                if d is not None and not d.empty:
+                    if "timestamp" in d.columns:
+                        d["timestamp"] = pd.to_datetime(d["timestamp"], utc=True).dt.tz_convert(self._tz())
+                        d.set_index("timestamp", inplace=True)
+                    else:
+                        if d.index.tz is None:
+                            d.index = d.index.tz_localize("UTC").tz_convert(self._tz())
+            result = {}
+            # Map bias per date using available daily close dates
+            if spy_daily is None or spy_daily.empty:
+                return result
+            for idx in spy_daily.index:
+                bias = self.strategy.evaluate_daily_bias_tjr_style(spy_daily.loc[:idx], None, None, spy_1h)
+                result[idx.date()] = bias
+            return result
+        except Exception as e:
+            self.logger.exception("Failed to compute daily bias: %s", e)
+            return {}
+
+    # ---------------------------
+    # Position management and exits
+    # ---------------------------
+    def _manage_positions(self, window_df: pd.DataFrame, positions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        # Delegate to strategy.manage_positions for breakeven/trailing logic if available
+        try:
+            managed = self.strategy.manage_positions(window_df, positions, risk_per_trade=self.config.get("risk_per_trade", 0.005))
+            return managed if managed is not None else positions
+        except Exception:
+            # Fallback: simple breakeven move when +1R reached
+            recent = window_df.iloc[-1]
+            for pos in positions:
+                if pos["side"] == "LONG":
+                    move = float(recent["high"]) - pos["entry_price"]
+                    if move >= pos["initial_risk"] and pos["stop_loss"] < pos["entry_price"]:
+                        pos["stop_loss"] = pos["entry_price"]
+                else:
+                    move = pos["entry_price"] - float(recent["low"])
+                    if move >= pos["initial_risk"] and pos["stop_loss"] > pos["entry_price"]:
+                        pos["stop_loss"] = pos["entry_price"]
+            return positions
+
+    def _check_exits(self, window_df: pd.DataFrame, positions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        recent = window_df.iloc[-1]
+        exits: List[Tuple[int, Dict[str, Any], float, float]] = []
+        # Update MAE/MFE
+        for idx, pos in enumerate(positions):
+            # track MAE/MFE in price distance
+            if pos["side"] == "LONG":
+                adverse = max(0.0, pos["entry_price"] - float(recent["low"]))
+                favorable = max(0.0, float(recent["high"]) - pos["entry_price"])
+            else:
+                adverse = max(0.0, float(recent["high"]) - pos["entry_price"])
+                favorable = max(0.0, pos["entry_price"] - float(recent["low"]))
+            pos["mae"] = max(pos.get("mae", 0.0), adverse)
+            pos["mfe"] = max(pos.get("mfe", 0.0), favorable)
+
+            # Stop/Target checks at bar extremes
+            hit_stop = False
+            hit_target = False
+            if pos["side"] == "LONG":
+                if float(recent["low"]) <= pos["stop_loss"]:
+                    hit_stop = True
+                if float(recent["high"]) >= pos["target"]:
+                    hit_target = True
+            else:
+                if float(recent["high"]) >= pos["stop_loss"]:
+                    hit_stop = True
+                if float(recent["low"]) <= pos["target"]:
+                    hit_target = True
+
+            if hit_stop or hit_target:
+                # Assume exit at stop/target price with slippage and fee
+                exit_side = "SELL" if pos["side"] == "LONG" else "BUY"
+                px = pos["stop_loss"] if hit_stop else pos["target"]
+                px_exec = self.cost.apply_slippage(px, exit_side, self.rng)
+                exit_fee = pos["shares"] * self.cost.fee_per_share
+                pnl = (px_exec - pos["entry_price"]) * pos["shares"] if pos["side"] == "LONG" else (pos["entry_price"] - px_exec) * pos["shares"]
+                pnl -= (pos.get("entry_fee", 0.0) + exit_fee)
+                r_mult = pnl / max(1e-9, (pos["initial_risk"] * pos["shares"]))
+                self.daily_pnl += pnl
+                exits.append((idx, pos, px_exec, pnl))
+                self._record_trade(
+                    entry_time=pos["open_time"],
+                    exit_time=recent.name.to_pydatetime() if hasattr(recent, "name") else datetime.combine(self.current_day, time(16, 0)),
+                    side=pos["side"],
+                    entry=pos["entry_price"],
+                    stop=pos["stop_loss"],
+                    target=pos["target"],
+                    exit=px_exec,
+                    shares=pos["shares"],
+                    pnl=pnl,
+                    r_mult=r_mult,
+                    mae_r=(pos["mae"] / max(1e-9, pos["initial_risk"])),
+                    mfe_r=(pos["mfe"] / max(1e-9, pos["initial_risk"])),
+                    duration_bars=len(window_df),
+                    setup_name=pos.get("setup_name", ""),
+                    reasons=pos.get("reasons", ""),
+                    regime=self._regime_from_features(recent),
+                )
+
+        # Remove exited positions
+        if exits:
+            to_remove = sorted([i for i, _, _, _ in exits], reverse=True)
+            for i in to_remove:
+                positions.pop(i)
+        return positions
+
+    # ---------------------------
+    # Utilities
+    # ---------------------------
+    def _record_trade(
+        self,
+        entry_time: datetime,
+        exit_time: datetime,
+        side: str,
+        entry: float,
+        stop: float,
+        target: float,
+        exit: float,
+        shares: float,
+        pnl: float,
+        r_mult: float,
+        mae_r: float,
+        mfe_r: float,
+        duration_bars: int,
+        setup_name: str,
+        reasons: str,
+        regime: str,
+    ):
+        rec = TradeRecord(
+            entry_time=entry_time,
+            exit_time=exit_time,
+            side=side,
+            entry=entry,
+            stop=stop,
+            target=target,
+            exit=exit,
+            shares=shares,
+            pnl=pnl,
+            r_multiple=r_mult,
+            mae_r=mae_r,
+            mfe_r=mfe_r,
+            duration_bars=duration_bars,
+            setup_name=setup_name,
+            reasons=reasons,
+            regime=regime,
+        )
+        self.trades.append(rec)
+
+    def _write_csv(self):
+        if not self.trades:
+            self.logger.info("No trades to write.")
+            return
+        rows = []
+        for t in self.trades:
+            rows.append(
+                {
+                    "entry_time": t.entry_time,
+                    "exit_time": t.exit_time,
+                    "side": t.side,
+                    "entry": t.entry,
+                    "stop": t.stop,
+                    "target": t.target,
+                    "exit": t.exit,
+                    "shares": t.shares,
+                    "pnl": t.pnl,
+                    "r_multiple": t.r_multiple,
+                    "mae_r": t.mae_r,
+                    "mfe_r": t.mfe_r,
+                    "duration_bars": t.duration_bars,
+                    "setup_name": t.setup_name,
+                    "reasons": t.reasons,
+                    "regime": t.regime,
+                }
+            )
+        trades_df = pd.DataFrame(rows)
+        os.makedirs(os.path.dirname(self.csv_out), exist_ok=True)
+        if os.path.exists(self.csv_out):
+            # append
+            trades_df.to_csv(self.csv_out, mode="a", index=False, header=False)
+        else:
+            trades_df.to_csv(self.csv_out, index=False)
+        self.logger.info(f"Wrote trades to {self.csv_out}")
+
+    def _summary(self):
+        if not self.trades:
+            self.logger.info("No trades executed.")
+            return
+        df = pd.DataFrame([t.__dict__ for t in self.trades])
+        trades = len(df)
+        win_rate = float((df["pnl"] > 0).mean()) if trades > 0 else 0.0
+        total_pnl = float(df["pnl"].sum())
+        avg_r = float(df["r_multiple"].mean())
+        self.logger.info(f"Summary - Trades: {trades} | WinRate: {win_rate*100:.2f}% | Total PnL: {total_pnl:.2f} | Avg R: {avg_r:.2f}")
+
+    def _regime_from_features(self, row: pd.Series) -> str:
+        vr = float(row.get("vol_ratio", 0.0))
+        if vr >= 0.01:
+            return "HIGH_VOL"
+        if vr >= 0.005:
+            return "MED_VOL"
+        return "LOW_VOL"
+
+    def _tz(self):
+        # map timezone string from config if exists
+        tz = self.config.get("timezone", "America/New_York")
+        return tz
+
+    def _normalize_timeframe(self, tf: str) -> str:
+        # Allow 5min/15min/1h/1day or 5m/15m/1h/1day
+        mapping = {"5m": "5min", "15m": "15min", "10m": "10min", "60m": "1hour", "1h": "1hour", "1d": "1day", "1day": "1day"}
+        return mapping.get(tf, tf)
