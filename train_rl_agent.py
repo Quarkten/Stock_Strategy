@@ -18,6 +18,7 @@ from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
 from sb3_contrib import TQC
+from src.agents.replay.sb3_per_buffer import SB3PrioritizedReplayBuffer
 import wandb
 from wandb.integration.sb3 import WandbCallback
 
@@ -107,7 +108,18 @@ def train(agent: str, env_fn, rl_cfg: RLConfig, model_path: str, eval_only: bool
     elif agent.lower() == "sac":
         model = SAC("MlpPolicy", vec_env, learning_rate=rl_cfg.sac_lr, verbose=1, seed=rl_cfg.seed, batch_size=rl_cfg.sac_batch_size, tensorboard_log=f"runs/{run.id}" if run else None)
     elif agent.lower() == "tqc":
-        model = TQC("MlpPolicy", vec_env, learning_rate=rl_cfg.tqc_lr, verbose=1, seed=rl_cfg.seed, batch_size=rl_cfg.tqc_batch_size, tensorboard_log=f"runs/{run.id}" if run else None)
+        replay_buffer_kwargs = {"stratified_config": cfg.get("replay")}
+        model = TQC(
+            "MlpPolicy",
+            vec_env,
+            learning_rate=rl_cfg.tqc_lr,
+            verbose=1,
+            seed=rl_cfg.seed,
+            batch_size=rl_cfg.tqc_batch_size,
+            replay_buffer_class=SB3PrioritizedReplayBuffer,
+            replay_buffer_kwargs=replay_buffer_kwargs,
+            tensorboard_log=f"runs/{run.id}" if run else None,
+        )
     else:
         raise ValueError("Unsupported agent, choose from: ppo, sac, tqc")
 
@@ -218,12 +230,19 @@ def parse_args():
     p.add_argument("--val-days", type=int, default=63, help="Number of days for validation window")
     p.add_argument("--step-days", type=int, default=63, help="Number of days to step forward")
     p.add_argument("--eval-log-path", type=str, default="data/tqc_trades.csv", help="Path to save evaluation trade log")
+    p.add_argument("--reward-params", type=str, help="JSON string of reward parameters to override")
     return p.parse_args()
 
 
 def main():
     args = parse_args()
     cfg = load_merged_config()
+
+    if args.reward_params:
+        import json
+        reward_params = json.loads(args.reward_params)
+        cfg["reward"].update(reward_params)
+
     rl_cfg = RLConfig(
         agent=args.agent,
         timesteps=int(args.timesteps),
