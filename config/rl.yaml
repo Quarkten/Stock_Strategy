@@ -12,10 +12,10 @@ env:
 
 reward:
   loss_clip_r: -1.0
-  loss_penalty_scale: 1.25
+  loss_penalty_scale: 1.0
   tail_loss_penalty_scale: 0.75
-  gain_knee_r: 1.5
-  tail_gain_scale: 2.0
+  gain_knee_r: 1.2
+  tail_gain_scale: 2.5
   dd_penalty_scale: 0.25
   mae_penalty_scale: 0.05
   mae_floor_r: 0.5
@@ -47,7 +47,8 @@ replay:
 
 backtest_costs:
   slippage_ticks: 0.01
-  fee_per_share: 0.0
-  spread_widen_prob: 0.0
+  fee_per_share: 0.005
+  spread_widen_prob: 0.05
   spread_widen_ticks: 0.02
   latency_bars: 0
+  data_augmentation: true

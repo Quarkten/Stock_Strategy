@@ -250,9 +250,16 @@ What this does:
 ```bash
 # Example: train a PPO agent on SPY 5-minute bars for 2023
 python train_rl_agent.py --agent ppo --symbol SPY --timeframe 5min --start 20230101 --end 20231231 --timesteps 10000
+
+# Train a TQC agent with walk-forward training
+python train_rl_agent.py --agent tqc --symbol SPY --timeframe 5min --start 20230101 --end 20231231 --timesteps 10000 --walk-forward --train-days 180 --val-days 60 --step-days 60 --wandb-project rl-trader
 ```
 
 *   **Evaluating an RL Agent**
+The `evaluation_enhanced.ipynb` notebook provides a comprehensive framework for evaluating and comparing the performance of different agents. To use it:
+1.  Make sure you have the trade logs for the baseline and the RL agents you want to evaluate. The walk-forward training script will generate a trade log for the validation periods.
+2.  Open the notebook and update the file paths in the "Configuration and Data Loading" section.
+3.  Run the notebook to generate a detailed report with metrics, plots, and a comparison table.
 ```bash
 # Example: evaluate a trained PPO agent
 python train_rl_agent.py --agent ppo --symbol SPY --timeframe 5min --start 20240101 --end 20240131 --timesteps 0 --eval-only

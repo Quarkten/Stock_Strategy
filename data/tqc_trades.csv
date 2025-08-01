@@ -1,0 +1,6 @@
+entry_time,exit_time,side,entry,stop,target,exit,shares,pnl,r_multiple,mae_r,mfe_r,duration_bars,setup_name,reasons,regime
+2023-01-03 10:00:00,2023-01-03 11:00:00,LONG,100,99,102,101,10,10,1,0.5,1,12,momentum_continuation,mom_score:0.8,HIGH_VOL
+2023-01-03 12:00:00,2023-01-03 13:00:00,SHORT,102,103,100,101,10,-10,-1,0.5,1,12,mean_reversion_vwap_bbands,mr_score:0.7,MED_VOL
+2023-01-04 10:00:00,2023-01-04 11:00:00,LONG,105,104,107,106,10,10,1,0.5,1,12,momentum_continuation,mom_score:0.9,HIGH_VOL
+2023-01-04 14:00:00,2023-01-04 15:00:00,LONG,106,105,108,107,10,10,1,0.5,1,12,momentum_continuation,mom_score:0.85,MED_VOL
+2023-01-05 10:00:00,2023-01-05 11:00:00,SHORT,110,111,108,109,10,-10,-1,0.5,1,12,mean_reversion_vwap_bbands,mr_score:0.6,LOW_VOL
