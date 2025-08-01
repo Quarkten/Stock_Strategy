@@ -76,6 +76,7 @@ class TradingEnv(gym.Env if gym else object):
         reward_fn,
         config: Dict[str, Any],
         seed: int = 42,
+        lookback_window: int = 20,
     ):
         if gym is None or spaces is None:
             raise ImportError("gymnasium is required for TradingEnv")
@@ -129,10 +130,11 @@ class TradingEnv(gym.Env if gym else object):
 
         # Observation construction
         self.feature_cols = self._infer_feature_columns(self.df)
+        self.lookback_window = lookback_window
         # Observation = features + regime one-hot + position context (6) + risk context (3) + LOB (40)
         self.n_lob_levels = 10
-        obs_dim = len(self.feature_cols) + 3 + 6 + 3 + self.n_lob_levels * 4
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32)
+        n_features = len(self.feature_cols) + 3 + 6 + 3 + self.n_lob_levels * 4
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(self.lookback_window, n_features), dtype=np.float32)
 
         # Actions flattened to a single Box for SB3 compatibility:
         # [disc_onehot(4), size_mult(0..1), stop_mult(0.5..2.5), tp_mult(0.5..3.0), time_stop(0..1)]
@@ -373,30 +375,36 @@ class TradingEnv(gym.Env if gym else object):
         return np.array([daily_r, episode_r, streak], dtype=np.float32)
 
     def _build_observation(self) -> np.ndarray:
-        if self.ptr >= len(self.df):
-            row = self.df.iloc[-1]
-        else:
-            row = self.df.iloc[self.ptr]
-        feats = np.array([float(row[c]) for c in self.feature_cols], dtype=np.float32)
-        regime = self._regime_one_hot(row)
-        pos_ctx = self._position_context()
-        risk_ctx = self._risk_context()
+        obs_list = []
+        for i in range(self.lookback_window):
+            idx = max(0, self.ptr - self.lookback_window + 1 + i)
+            row = self.df.iloc[idx]
 
-        # LOB features
-        lob_snapshot = self.lob.get_snapshot(self.n_lob_levels)
-        bids = lob_snapshot['bids']
-        asks = lob_snapshot['asks']
-        lob_features = np.zeros(self.n_lob_levels * 4)
-        for i in range(self.n_lob_levels):
-            if i < len(bids):
-                lob_features[i*4] = bids[i][0]
-                lob_features[i*4+1] = bids[i][1]
-            if i < len(asks):
-                lob_features[i*4+2] = asks[i][0]
-                lob_features[i*4+3] = asks[i][1]
+            feats = np.array([float(row[c]) for c in self.feature_cols], dtype=np.float32)
+            regime = self._regime_one_hot(row)
 
-        obs = np.concatenate([feats, regime, pos_ctx, risk_ctx, lob_features], axis=0).astype(np.float32)
-        return obs
+            # For simplicity, we use the current position and risk context for all past observations
+            pos_ctx = self._position_context()
+            risk_ctx = self._risk_context()
+
+            # LOB features
+            # For simplicity, we use the current LOB for all past observations
+            lob_snapshot = self.lob.get_snapshot(self.n_lob_levels)
+            bids = lob_snapshot['bids']
+            asks = lob_snapshot['asks']
+            lob_features = np.zeros(self.n_lob_levels * 4)
+            for j in range(self.n_lob_levels):
+                if j < len(bids):
+                    lob_features[j*4] = bids[j][0]
+                    lob_features[j*4+1] = bids[j][1]
+                if j < len(asks):
+                    lob_features[j*4+2] = asks[j][0]
+                    lob_features[j*4+3] = asks[j][1]
+
+            obs = np.concatenate([feats, regime, pos_ctx, risk_ctx, lob_features], axis=0).astype(np.float32)
+            obs_list.append(obs)
+
+        return np.array(obs_list, dtype=np.float32)
 
     def _update_lob(self):
         self.lob = LOB()
