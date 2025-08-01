@@ -68,3 +68,4 @@ sb3-contrib
 wandb
 pettingzoo
 supersuit
+shap
