@@ -5,6 +5,8 @@ from typing import Any, Dict, Optional, Tuple, List
 
 import numpy as np
 import pandas as pd
+from src.data.lob import LOB
+from src.data.synthetic_lob import generate_synthetic_lob
 
 # Gymnasium is listed in requirements; import lazily to avoid hard fail if missing at import time
 try:
@@ -22,8 +24,19 @@ class CostModel:
     spread_widen_prob: float = 0.0
     spread_widen_ticks: float = 0.0
     latency_bars: int = 0
+    latency_dist: str = "fixed"
+    latency_shape: float = 2.0
+    latency_scale: float = 1.0
     seed: int = 42
     data_augmentation: bool = False
+
+    def get_latency(self, rng: random.Random) -> int:
+        if self.latency_dist == "fixed":
+            return self.latency_bars
+        elif self.latency_dist == "gamma":
+            return int(rng.gammavariate(self.latency_shape, self.latency_scale))
+        else:
+            return 0
 
     def apply_slippage(self, price: float, side: str, rng: random.Random) -> float:
         slip = self.slippage_ticks
@@ -80,6 +93,10 @@ class TradingEnv(gym.Env if gym else object):
         self.df = data.sort_index()
         self.ptr = 0
 
+        # LOB
+        self.lobs = generate_synthetic_lob(self.df)
+        self.lob = LOB()
+
         # Cost Model
         cost_config = self.config.get("backtest_costs", {})
         self.cost = CostModel(
@@ -112,8 +129,9 @@ class TradingEnv(gym.Env if gym else object):
 
         # Observation construction
         self.feature_cols = self._infer_feature_columns(self.df)
-        # Observation = features + regime one-hot + position context (6) + risk context (3)
-        obs_dim = len(self.feature_cols) + 3 + 6 + 3
+        # Observation = features + regime one-hot + position context (6) + risk context (3) + LOB (40)
+        self.n_lob_levels = 10
+        obs_dim = len(self.feature_cols) + 3 + 6 + 3 + self.n_lob_levels * 4
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32)
 
         # Actions flattened to a single Box for SB3 compatibility:
@@ -145,6 +163,7 @@ class TradingEnv(gym.Env if gym else object):
         self.daily_pnl = 0.0
         self.episode_pnl = 0.0
         self.trades.clear()
+        self._update_lob()
         obs = self._build_observation()
         info = {}
         return obs, info
@@ -178,14 +197,28 @@ class TradingEnv(gym.Env if gym else object):
 
         # Execute action
         info: Dict[str, Any] = {}
+
+        # Apply latency
+        latency = self.cost.get_latency(self.rng)
+        if self.ptr + latency >= len(self.df):
+            return self._build_observation(), 0.0, True, False, {"skip": "latency"}
+
+        bar = self.df.iloc[self.ptr + latency]
+        close = float(bar["close"])
+        atr = float(bar.get("atr", np.nan))
+
         if disc == 1 or disc == 2:
             # Open new position if flat
             if self.position is None:
                 side = "LONG" if disc == 1 else "SHORT"
-                entry_price_raw = close
 
-                # Apply slippage on entry
-                entry_price = self.cost.apply_slippage(entry_price_raw, "BUY" if side == "LONG" else "SELL", self.rng)
+                # Match order against LOB
+                trades = self.lob.match_order("BUY" if side == "LONG" else "SELL", size_mult * self.nominal_risk)
+                if not trades:
+                    return self._build_observation(), 0.0, False, False, {"skip": "no_liquidity"}
+
+                entry_price = np.average([t[0] for t in trades], weights=[t[1] for t in trades])
+                shares = sum(t[1] for t in trades)
 
                 stop_dist = stop_mult * atr
                 tp_dist = tp_mult * atr
@@ -229,7 +262,11 @@ class TradingEnv(gym.Env if gym else object):
         elif disc == 3:
             # Close if position
             if self.position is not None:
-                exit_price = self.cost.apply_slippage(close, "SELL" if self.position["side"] == "LONG" else "BUY", self.rng)
+                trades = self.lob.match_order("SELL" if self.position["side"] == "LONG" else "BUY", self.position["shares"])
+                if not trades:
+                    return self._build_observation(), 0.0, False, False, {"skip": "no_liquidity"}
+
+                exit_price = np.average([t[0] for t in trades], weights=[t[1] for t in trades])
                 pnl = self._close_position(exit_price)
                 reward += self._compute_reward(pnl, exit_price)
                 info["closed"] = True
@@ -288,10 +325,12 @@ class TradingEnv(gym.Env if gym else object):
                     terminated = True
                     info["daily_halt"] = True
 
-        # Advance pointer
+        # Advance pointer and update LOB
         self.ptr += 1
         if self.ptr >= self.max_bars or self.ptr >= len(self.df):
             terminated = True
+        else:
+            self._update_lob()
 
         obs = self._build_observation()
         return obs, float(reward), bool(terminated), bool(truncated), info
@@ -342,8 +381,30 @@ class TradingEnv(gym.Env if gym else object):
         regime = self._regime_one_hot(row)
         pos_ctx = self._position_context()
         risk_ctx = self._risk_context()
-        obs = np.concatenate([feats, regime, pos_ctx, risk_ctx], axis=0).astype(np.float32)
+
+        # LOB features
+        lob_snapshot = self.lob.get_snapshot(self.n_lob_levels)
+        bids = lob_snapshot['bids']
+        asks = lob_snapshot['asks']
+        lob_features = np.zeros(self.n_lob_levels * 4)
+        for i in range(self.n_lob_levels):
+            if i < len(bids):
+                lob_features[i*4] = bids[i][0]
+                lob_features[i*4+1] = bids[i][1]
+            if i < len(asks):
+                lob_features[i*4+2] = asks[i][0]
+                lob_features[i*4+3] = asks[i][1]
+
+        obs = np.concatenate([feats, regime, pos_ctx, risk_ctx, lob_features], axis=0).astype(np.float32)
         return obs
+
+    def _update_lob(self):
+        self.lob = LOB()
+        lob_snapshot = self.lobs[self.ptr]
+        for price, size in lob_snapshot['bids']:
+            self.lob.add_order('BID', price, size)
+        for price, size in lob_snapshot['asks']:
+            self.lob.add_order('ASK', price, size)
 
     def _close_position(self, exit_px: float) -> float:
         assert self.position is not None

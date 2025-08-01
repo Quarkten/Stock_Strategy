@@ -66,3 +66,5 @@ websocket-client
 alpha_vantage
 sb3-contrib
 wandb
+pettingzoo
+supersuit
