@@ -17,11 +17,14 @@ from src.agents.rewards.asymmetric_reward import AsymmetricReward, AsymmetricRew
 from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
-
+from sb3_contrib import TQC
+from src.agents.replay.sb3_per_buffer import SB3PrioritizedReplayBuffer
+import wandb
+from wandb.integration.sb3 import WandbCallback
 
 @dataclass
 class RLConfig:
-    agent: str = "ppo"  # ppo | sac
+    agent: str = "ppo"  # ppo | sac | tqc
     timesteps: int = 10000
     seed: int = 42
     # PPO
@@ -30,6 +33,9 @@ class RLConfig:
     # SAC
     sac_lr: float = 3e-4
     sac_batch_size: int = 256
+    # TQC
+    tqc_lr: float = 7.3e-4
+    tqc_batch_size: int = 256
 
 
 def load_merged_config(config_path: str = "config/config.yaml") -> Dict[str, Any]:
@@ -84,18 +90,46 @@ def make_env(df: pd.DataFrame, strategy: IntradayStrategy, cfg: Dict[str, Any], 
     return _env_fn
 
 
-def train(agent: str, env_fn, rl_cfg: RLConfig, model_path: str, eval_only: bool = False):
+def train(agent: str, env_fn, rl_cfg: RLConfig, model_path: str, eval_only: bool = False, wandb_project: Optional[str] = None):
+    run = None
+    if wandb_project:
+        run = wandb.init(
+            project=wandb_project,
+            config=rl_cfg,
+            sync_tensorboard=True,  # auto-upload sb3's tensorboard logs
+            monitor_gym=True,       # auto-upload videos of agents
+            save_code=True,         # optional
+        )
+
+    vec_env = DummyVecEnv([env_fn])
+
     if agent.lower() == "ppo":
-        model = PPO("MlpPolicy", DummyVecEnv([env_fn]), learning_rate=rl_cfg.ppo_lr, verbose=1, seed=rl_cfg.seed, batch_size=rl_cfg.ppo_batch_size)
+        model = PPO("MlpPolicy", vec_env, learning_rate=rl_cfg.ppo_lr, verbose=1, seed=rl_cfg.seed, batch_size=rl_cfg.ppo_batch_size, tensorboard_log=f"runs/{run.id}" if run else None)
     elif agent.lower() == "sac":
-        model = SAC("MlpPolicy", DummyVecEnv([env_fn]), learning_rate=rl_cfg.sac_lr, verbose=1, seed=rl_cfg.seed, batch_size=rl_cfg.sac_batch_size)
+        model = SAC("MlpPolicy", vec_env, learning_rate=rl_cfg.sac_lr, verbose=1, seed=rl_cfg.seed, batch_size=rl_cfg.sac_batch_size, tensorboard_log=f"runs/{run.id}" if run else None)
+    elif agent.lower() == "tqc":
+        replay_buffer_kwargs = {"stratified_config": cfg.get("replay")}
+        model = TQC(
+            "MlpPolicy",
+            vec_env,
+            learning_rate=rl_cfg.tqc_lr,
+            verbose=1,
+            seed=rl_cfg.seed,
+            batch_size=rl_cfg.tqc_batch_size,
+            replay_buffer_class=SB3PrioritizedReplayBuffer,
+            replay_buffer_kwargs=replay_buffer_kwargs,
+            tensorboard_log=f"runs/{run.id}" if run else None,
+        )
     else:
-        raise ValueError("Unsupported agent, choose from: ppo, sac")
+        raise ValueError("Unsupported agent, choose from: ppo, sac, tqc")
 
     if not eval_only:
-        model.learn(total_timesteps=int(rl_cfg.timesteps))
+        callback = WandbCallback(model_save_path=f"models/{run.id}" if run else model_path) if run else None
+        model.learn(total_timesteps=int(rl_cfg.timesteps), callback=callback)
         os.makedirs(os.path.dirname(model_path), exist_ok=True)
         model.save(model_path)
+        if run:
+            run.finish()
     else:
         if os.path.exists(model_path + ".zip"):
             model = model.load(model_path, env=DummyVecEnv([env_fn]))
@@ -120,9 +154,69 @@ def _normalize_timeframe(tf: str) -> str:
     return mapping.get(tf, tf)
 
 
+def walk_forward_train(
+    agent: str,
+    df: pd.DataFrame,
+    strategy: IntradayStrategy,
+    cfg: Dict[str, Any],
+    rl_cfg: RLConfig,
+    train_days: int,
+    val_days: int,
+    step_days: int,
+    wandb_project: Optional[str] = None,
+    eval_log_path: Optional[str] = None,
+):
+    unique_dates = df.index.normalize().unique()
+    start_idx = 0
+    end_idx = train_days
+    step_idx = 0
+    all_trades = []
+
+    while end_idx < len(unique_dates):
+        train_start_date = unique_dates[start_idx]
+        train_end_date = unique_dates[end_idx - 1]
+        val_start_date = unique_dates[end_idx]
+        val_end_date = unique_dates[min(end_idx + val_days - 1, len(unique_dates) - 1)]
+
+        print(f"--- Walk-forward step {step_idx} ---")
+        print(f"Training from {train_start_date.date()} to {train_end_date.date()}")
+        print(f"Validating from {val_start_date.date()} to {val_end_date.date()}")
+
+        train_df = df.loc[train_start_date:train_end_date]
+        val_df = df.loc[val_start_date:val_end_date]
+
+        model_path = f"models/{rl_cfg.agent}_{step_idx}"
+
+        # Train
+        train_env_fn = make_env(train_df, strategy, cfg, reward_cfg=cfg.get("reward", {}), seed=rl_cfg.seed)
+        train(agent, train_env_fn, rl_cfg, model_path, eval_only=False, wandb_project=wandb_project)
+
+        # Evaluate
+        eval_env = DummyVecEnv([make_env(val_df, strategy, cfg, reward_cfg=cfg.get("reward", {}), seed=rl_cfg.seed)])
+        model = TQC.load(model_path, env=eval_env) if agent == 'tqc' else SAC.load(model_path, env=eval_env) if agent == 'sac' else PPO.load(model_path, env=eval_env)
+
+        obs = eval_env.reset()
+        done = False
+        while not done:
+            action, _ = model.predict(obs, deterministic=True)
+            obs, _, done, _ = eval_env.step(action)
+
+        trades = eval_env.envs[0].unwrapped.trades
+        all_trades.extend(trades)
+
+        start_idx += step_days
+        end_idx += step_days
+        step_idx += 1
+
+    if eval_log_path and all_trades:
+        trades_df = pd.DataFrame(all_trades)
+        trades_df.to_csv(eval_log_path, index=False)
+        print(f"Saved evaluation trades to {eval_log_path}")
+
+
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--agent", type=str, default="ppo", help="ppo|sac")
+    p.add_argument("--agent", type=str, default="ppo", help="ppo|sac|tqc")
     p.add_argument("--symbol", type=str, default="SPY")
     p.add_argument("--timeframe", type=str, default="5min")
     p.add_argument("--start", type=str, required=False)
@@ -130,21 +224,55 @@ def parse_args():
     p.add_argument("--timesteps", type=int, default=10000)
     p.add_argument("--eval-only", action="store_true")
     p.add_argument("--model-path", type=str, default="models/rl_model")
+    p.add_argument("--wandb-project", type=str, help="Wandb project name")
+    p.add_argument("--walk-forward", action="store_true", help="Enable walk-forward training")
+    p.add_argument("--train-days", type=int, default=252, help="Number of days for training window")
+    p.add_argument("--val-days", type=int, default=63, help="Number of days for validation window")
+    p.add_argument("--step-days", type=int, default=63, help="Number of days to step forward")
+    p.add_argument("--eval-log-path", type=str, default="data/tqc_trades.csv", help="Path to save evaluation trade log")
+    p.add_argument("--reward-params", type=str, help="JSON string of reward parameters to override")
     return p.parse_args()
 
 
 def main():
     args = parse_args()
     cfg = load_merged_config()
-    rl_cfg = RLConfig(agent=args.agent, timesteps=int(args.timesteps), seed=int(cfg.get("seed", 42)))
+
+    if args.reward_params:
+        import json
+        reward_params = json.loads(args.reward_params)
+        cfg["reward"].update(reward_params)
+
+    rl_cfg = RLConfig(
+        agent=args.agent,
+        timesteps=int(args.timesteps),
+        seed=int(cfg.get("seed", 42)),
+        tqc_lr=float(cfg.get("training", {}).get("tqc", {}).get("learning_rate", 7.3e-4)),
+        tqc_batch_size=int(cfg.get("training", {}).get("tqc", {}).get("batch_size", 256)),
+    )
     # Strategy and data
     strategy = IntradayStrategy(cfg)
     data_fetcher = DataFetcher(cfg)
     df = build_dataset(data_fetcher, args.symbol or cfg.get("target_symbol", "SPY"), args.timeframe or cfg.get("timeframes", {}).get("short_term", ["5min"])[0], args.start, args.end, cfg)
-    # Env
-    env_fn = make_env(df, strategy, cfg, reward_cfg=cfg.get("reward", {}), seed=rl_cfg.seed)
-    # Train/Eval
-    train(args.agent, env_fn, rl_cfg, args.model_path, eval_only=bool(args.eval_only))
+
+    if args.walk_forward:
+        walk_forward_train(
+            agent=args.agent,
+            df=df,
+            strategy=strategy,
+            cfg=cfg,
+            rl_cfg=rl_cfg,
+            train_days=args.train_days,
+            val_days=args.val_days,
+            step_days=args.step_days,
+            wandb_project=args.wandb_project,
+            eval_log_path=args.eval_log_path,
+        )
+    else:
+        # Env
+        env_fn = make_env(df, strategy, cfg, reward_cfg=cfg.get("reward", {}), seed=rl_cfg.seed)
+        # Train/Eval
+        train(args.agent, env_fn, rl_cfg, args.model_path, eval_only=bool(args.eval_only), wandb_project=args.wandb_project)
 
 
 if __name__ == "__main__":
