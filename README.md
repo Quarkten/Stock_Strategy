@@ -760,6 +760,28 @@ Common variables you might need to set (names are examples; do not include real 
 
 Set in your shell or in [.env](.env). If also using [config/secrets.yaml](config/secrets.yaml), ensure values are consistent.
 
+# Path to Production
+
+Obtaining a production-ready trading agent is an iterative process that involves more than just a single training run. This framework provides the tools to perform this process. Here are the recommended steps to get from this codebase to a production-ready agent:
+
+1.  **Run the Production-Level Training**: The `run_production.sh` script is the starting point for training a robust agent on a large dataset. This will give you a well-trained model to begin with.
+
+2.  **Hyperparameter Optimization**: For optimal performance, you should perform a systematic search for the best hyperparameters for the TQC agent and the `AsymmetricReward` function. You can use a library like Optuna or Hyperopt, integrated with the `train_rl_agent.py` script, to automate this process. The `wandb` integration will help you to track and compare the results of different hyperparameter configurations.
+
+3.  **Cross-Validation**: To ensure the agent is not overfitted to a specific instrument or timeframe, you should perform cross-validation by running the training and evaluation on:
+    *   **Different Instruments**: Other ETFs (e.g., QQQ, IWM) or large-cap stocks.
+    *   **Different Timeframes**: e.g., 15-minute, 1-hour.
+
+4.  **Rigorous Backtesting and Risk Analysis**: Use the `evaluation_enhanced.ipynb` notebook to perform a deep analysis of the agent's performance. Pay close attention to:
+    *   The asymmetric payoff profile (the >=80% small losses, <=20% large wins objective).
+    *   Risk-adjusted returns (Sharpe, Sortino, Calmar).
+    *   Drawdown characteristics.
+    *   Performance in different market regimes.
+
+5.  **Forward Testing (Paper Trading)**: Once you have an agent that performs well in backtesting, the final and most crucial step is to deploy it in a paper trading environment (e.g., with Alpaca). This will allow you to see how the agent performs with live market data, latency, and other real-world frictions.
+
+By following this iterative process of training, evaluation, and refinement, you can use this framework to develop a robust and profitable production-ready trading agent.
+
 # New: Troubleshooting
 
 TA-Lib on Windows
