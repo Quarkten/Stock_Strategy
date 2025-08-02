@@ -69,3 +69,4 @@ wandb
 pettingzoo
 supersuit
 shap
+tqdm

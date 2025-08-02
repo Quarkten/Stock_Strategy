@@ -6,6 +6,7 @@ import pandas as pd
 from datetime import datetime, time, timedelta
 import random
 import os
+from tqdm import tqdm
 
 # This backtester is designed to match run.py expectations and integrate with IntradayStrategy.evaluate_entry
 # It supports:
@@ -144,7 +145,7 @@ class Backtester:
         daily_bias_map = self._compute_daily_bias()
 
         # Iterate day-by-day
-        for day, day_df in df.groupby(df.index.date):
+        for day, day_df in tqdm(df.groupby(df.index.date), desc="Backtesting"):
             # reset daily loss
             self.daily_pnl = 0.0
             self.current_day = day
