@@ -824,6 +824,27 @@ The framework supports a Transformer-based policy for the TQC agent.
 -   **Transformer Policy**: The `TransformerPolicy` uses a Transformer encoder to process the sequence of market data.
 -   **Usage**: You can use the `--policy transformer` argument in the `train_rl_agent.py` script to use the Transformer policy.
 
+## Multi-Timeframe Analysis
+
+The framework now supports the use of multi-timeframe features.
+
+-   **Multi-Timeframe Features**: The `add_multi_timeframe_features` function in `src/features/multi_timeframe.py` generates features from daily and weekly timeframes, as well as support and resistance levels.
+-   **Integration**: These features are automatically added to the dataset when you run the `train_rl_agent.py` script.
+
+## Database Integration
+
+All trades from the backtester and the RL environment are now logged to a SQLite database.
+
+-   **Database Manager**: The `DatabaseManager` class in `src/data/database.py` handles all database operations.
+-   **Trade Logging**: The `Backtester` and `TradingEnv` classes now use the `DatabaseManager` to log all trades.
+
+## Optimization Suite
+
+The framework includes a simple optimization suite for hyperparameter tuning.
+
+-   **Configuration**: You can define the hyperparameters to be tuned in the `config/optimization.yaml` file.
+-   **Execution**: The `run_optimization.sh` script runs a series of backtests with different hyperparameter combinations.
+
 # New: Troubleshooting
 
 TA-Lib on Windows
