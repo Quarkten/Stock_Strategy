@@ -782,6 +782,47 @@ Obtaining a production-ready trading agent is an iterative process that involves
 
 By following this iterative process of training, evaluation, and refinement, you can use this framework to develop a robust and profitable production-ready trading agent.
 
+# Advanced Features
+
+This framework includes several advanced features for research and development.
+
+## Hierarchical Reinforcement Learning (HRL)
+
+The HRL framework allows for training a two-level agent with a Manager and a Worker.
+
+-   **Manager**: Decides on the high-level strategy (e.g., long, short, neutral) and the target R-multiple.
+-   **Worker**: Executes the strategy defined by the Manager.
+
+To train an HRL agent, you can use the `train_hrl_agent.py` script.
+
+## Multi-Agent Reinforcement Learning (MARL)
+
+The MARL framework simulates a market with multiple interacting agents.
+
+-   **Multi-Agent Environment**: The `MultiAgentTradingEnv` uses the PettingZoo API to manage multiple agents.
+-   **Independent Learners**: Each agent is an independent TQC agent that learns its own policy.
+
+To train a MARL system, you can use the `train_marl_agent.py` script.
+
+## Offline Reinforcement Learning
+
+The Offline RL framework allows for training an agent on a fixed dataset of historical trades.
+
+-   **Offline RL Library**: The framework uses the `d3rlpy` library with the CQL algorithm.
+-   **Offline Dataset**: You can prepare an offline dataset from a trade log using the `prepare_offline_dataset.py` script.
+-   **Offline Training**: You can train an offline agent using the `train_offline_agent.py` script.
+
+## Explainable AI (XAI)
+
+The `evaluation_enhanced.ipynb` notebook includes a section for XAI analysis using the `shap` library. This allows you to understand the decisions of the trained agents.
+
+## Advanced Architectures (Transformer Policy)
+
+The framework supports a Transformer-based policy for the TQC agent.
+
+-   **Transformer Policy**: The `TransformerPolicy` uses a Transformer encoder to process the sequence of market data.
+-   **Usage**: You can use the `--policy transformer` argument in the `train_rl_agent.py` script to use the Transformer policy.
+
 # New: Troubleshooting
 
 TA-Lib on Windows

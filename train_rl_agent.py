@@ -19,12 +19,14 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
 from sb3_contrib import TQC
 from src.agents.replay.sb3_per_buffer import SB3PrioritizedReplayBuffer
+from src.agents.policies.transformer_policy import TransformerPolicy, TransformerFeaturesExtractor
 import wandb
 from wandb.integration.sb3 import WandbCallback
 
 @dataclass
 class RLConfig:
     agent: str = "ppo"  # ppo | sac | tqc
+    policy: str = "mlp" # mlp | transformer
     timesteps: int = 10000
     seed: int = 42
     # PPO
@@ -108,9 +110,14 @@ def train(agent: str, env_fn, rl_cfg: RLConfig, model_path: str, eval_only: bool
     elif agent.lower() == "sac":
         model = SAC("MlpPolicy", vec_env, learning_rate=rl_cfg.sac_lr, verbose=1, seed=rl_cfg.seed, batch_size=rl_cfg.sac_batch_size, tensorboard_log=f"runs/{run.id}" if run else None)
     elif agent.lower() == "tqc":
+        policy_kwargs = {}
+        if rl_cfg.policy == "transformer":
+            policy_kwargs["features_extractor_class"] = TransformerFeaturesExtractor
+            policy_kwargs["features_extractor_kwargs"] = dict(features_dim=256)
+
         replay_buffer_kwargs = {"stratified_config": cfg.get("replay")}
         model = TQC(
-            "MlpPolicy",
+            TransformerPolicy if rl_cfg.policy == "transformer" else "MlpPolicy",
             vec_env,
             learning_rate=rl_cfg.tqc_lr,
             verbose=1,
@@ -118,6 +125,7 @@ def train(agent: str, env_fn, rl_cfg: RLConfig, model_path: str, eval_only: bool
             batch_size=rl_cfg.tqc_batch_size,
             replay_buffer_class=SB3PrioritizedReplayBuffer,
             replay_buffer_kwargs=replay_buffer_kwargs,
+            policy_kwargs=policy_kwargs,
             tensorboard_log=f"runs/{run.id}" if run else None,
         )
     else:
@@ -217,6 +225,7 @@ def walk_forward_train(
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--agent", type=str, default="ppo", help="ppo|sac|tqc")
+    p.add_argument("--policy", type=str, default="mlp", help="mlp|transformer")
     p.add_argument("--symbol", type=str, default="SPY")
     p.add_argument("--timeframe", type=str, default="5min")
     p.add_argument("--start", type=str, required=False)
@@ -245,6 +254,7 @@ def main():
 
     rl_cfg = RLConfig(
         agent=args.agent,
+        policy=args.policy,
         timesteps=int(args.timesteps),
         seed=int(cfg.get("seed", 42)),
         tqc_lr=float(cfg.get("training", {}).get("tqc", {}).get("learning_rate", 7.3e-4)),
