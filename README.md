@@ -225,13 +225,14 @@ graph TD
     ```
     Performs daily market analysis and sets the daily bias.
 
-*   **Trading Session** (9:30 AM - 3:45 PM EST)
+*   **Live Trading Session**
     ```bash
     python run.py --trade
     ```
-    Runs real-time trading loop.
-    Executes trades based on multi-timeframe analysis.
-    Manages risk and position sizing.
+    This will prompt you to select which agent you want to run:
+    1.  **Single Agent**: Runs a single TQC agent.
+    2.  **HRL Agent**: Runs the Hierarchical Reinforcement Learning agent.
+    3.  **MARL System**: Runs the Multi-Agent Reinforcement Learning system.
 
 *   **Backtesting (historical, date-ranged)**
 ```bash
