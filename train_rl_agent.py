@@ -10,6 +10,7 @@ import pandas as pd
 from src.strategies.intraday_strategy import IntradayStrategy
 from src.utils.data_fetcher import DataFetcher
 from src.utils.features import add_indicators
+from src.features.multi_timeframe import add_multi_timeframe_features
 from src.agents.envs.trading_env import TradingEnv
 from src.agents.rewards.asymmetric_reward import AsymmetricReward, AsymmetricRewardConfig
 
@@ -77,6 +78,7 @@ def build_dataset(data_fetcher: DataFetcher, symbol: str, timeframe: str, start:
 
     # Feature engineering
     df = add_indicators(df, cfg)
+    df = add_multi_timeframe_features(df)
     # Drop NaNs at beginning
     df = df.dropna().copy()
     return df

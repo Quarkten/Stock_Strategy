@@ -76,6 +76,8 @@ class TradeRecord:
     regime: str
 
 
+from src.data.database import DatabaseManager
+
 class Backtester:
     def __init__(
         self,
@@ -90,10 +92,12 @@ class Backtester:
         csv_out: Optional[str] = None,
         cost_model: Optional[Dict[str, Any]] = None,
         seed: int = 42,
+        db_path: str = "data/database/trading_data.sqlite3",
     ):
         self.logger = logging.getLogger(__name__)
         self.strategy = strategy
         self.data_fetcher = data_fetcher
+        self.db_manager = DatabaseManager(db_path)
         self.config = config or {}
         self.symbol = symbol
         self.timeframe = timeframe
@@ -529,6 +533,7 @@ class Backtester:
             regime=regime,
         )
         self.trades.append(rec)
+        self.db_manager.log_trade_record(rec)
 
     def _write_csv(self):
         if not self.trades:

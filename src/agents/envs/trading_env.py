@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from src.data.lob import LOB
 from src.data.synthetic_lob import generate_synthetic_lob
+from src.data.database import DatabaseManager
 
 # Gymnasium is listed in requirements; import lazily to avoid hard fail if missing at import time
 try:
@@ -77,6 +78,7 @@ class TradingEnv(gym.Env if gym else object):
         config: Dict[str, Any],
         seed: int = 42,
         lookback_window: int = 20,
+        db_path: str = "data/database/trading_data.sqlite3",
     ):
         if gym is None or spaces is None:
             raise ImportError("gymnasium is required for TradingEnv")
@@ -93,6 +95,9 @@ class TradingEnv(gym.Env if gym else object):
             raise ValueError("TradingEnv requires non-empty data DataFrame")
         self.df = data.sort_index()
         self.ptr = 0
+
+        # Database
+        self.db_manager = DatabaseManager(db_path)
 
         # LOB
         self.lobs = generate_synthetic_lob(self.df)
@@ -415,6 +420,8 @@ class TradingEnv(gym.Env if gym else object):
             self.lob.add_order('ASK', price, size)
 
     def _close_position(self, exit_px: float) -> float:
+        from src.execution.backtester import TradeRecord
+
         assert self.position is not None
         pos = self.position
         pnl = (exit_px - pos["entry"]) * pos["shares"] if pos["side"] == "LONG" else (pos["entry"] - exit_px) * pos["shares"]
@@ -426,10 +433,28 @@ class TradingEnv(gym.Env if gym else object):
 
         self.daily_pnl += pnl
         self.episode_pnl += pnl
-        trade = dict(pos)
-        trade["exit"] = exit_px
-        trade["pnl"] = pnl
-        self.trades.append(trade)
+
+        trade_record = TradeRecord(
+            entry_time=self.df.index[pos["open_idx"]],
+            exit_time=self.df.index[self.ptr],
+            side=pos["side"],
+            entry=pos["entry"],
+            exit=exit_px,
+            stop=pos["stop"],
+            target=pos["tp"],
+            shares=pos["shares"],
+            pnl=pnl,
+            r_multiple=pnl / (pos["initial_risk"] * pos["shares"]) if pos["initial_risk"] > 0 else 0,
+            mae_r=0, # Placeholder
+            mfe_r=0, # Placeholder
+            duration_bars=self.ptr - pos["open_idx"],
+            setup_name="rl_agent",
+            reasons="",
+            regime=""
+        )
+
+        self.trades.append(trade_record)
+        self.db_manager.log_trade_record(trade_record)
         self.position = None
         return pnl
 

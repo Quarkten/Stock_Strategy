@@ -134,6 +134,7 @@ class TradingApplication:
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Trading/backtest runner")
+    parser.add_argument("--trade", action="store_true", help="Run in live trading mode")
     parser.add_argument("--start", type=str, help="Backtest start date YYYYMMDD")
     parser.add_argument("--end", type=str, help="Backtest end date YYYYMMDD")
     parser.add_argument("--symbol", type=str, help="Symbol, e.g., SPY")
@@ -180,9 +181,89 @@ def backtest_main(args):
                     csv_out=csv_out)
     bt.run()
 
+def run_single_agent_live():
+    print("Running single agent live trading...")
+    # Placeholder for single agent live trading logic
+    pass
+
+def run_hrl_live():
+    from src.agents.hrl_manager import Manager
+    from src.agents.hrl_worker import Worker
+    from src.agents.envs.hrl_env import HRLEnv
+    from src.agents.envs.trading_env import TradingEnv
+
+    print("Running HRL live trading...")
+
+    cfg = TradingApplication().config
+    strategy = IntradayStrategy(cfg)
+    data_fetcher = DataFetcher(cfg)
+    df = build_dataset(data_fetcher, cfg.get("target_symbol", "SPY"), "5min", None, None, cfg)
+
+    trading_env = TradingEnv(df, strategy, None, cfg)
+    hrl_env = HRLEnv(trading_env, None, None)
+
+    manager = Manager.load("models/hrl_manager.zip")
+    worker = Worker.load("models/hrl_worker.zip")
+
+    obs, _ = hrl_env.reset()
+    done = False
+    while not done:
+        manager_action, _ = manager.predict(obs, deterministic=True)
+        goal = hrl_env._get_goal_from_manager_action(manager_action)
+
+        worker_done = False
+        while not worker_done:
+            worker_obs = hrl_env._get_worker_obs(hrl_env.trading_env._build_observation(), goal)
+            worker_action, _ = worker.predict(worker_obs, deterministic=True)
+
+            obs, _, terminated, truncated, _ = hrl_env.trading_env.step(worker_action)
+            worker_done = terminated or truncated
+
+        done = hrl_env.trading_env.ptr >= len(hrl_env.trading_env.df) -1
+
+    print("HRL live trading session finished.")
+
+def run_marl_live():
+    from sb3_contrib import TQC
+    from src.agents.envs.marl_env import MultiAgentTradingEnv
+    from src.agents.envs.trading_env import TradingEnv
+
+    print("Running MARL live trading...")
+
+    cfg = TradingApplication().config
+    strategy = IntradayStrategy(cfg)
+    data_fetcher = DataFetcher(cfg)
+    df = build_dataset(data_fetcher, cfg.get("target_symbol", "SPY"), "5min", None, None, cfg)
+
+    trading_env = TradingEnv(df, strategy, None, cfg)
+    marl_env = MultiAgentTradingEnv(trading_env, n_agents=2)
+
+    model = TQC.load("models/marl_tqc.zip")
+
+    obs, _ = marl_env.reset()
+    done = False
+    while not done:
+        actions = {agent: model.predict(obs[agent], deterministic=True)[0] for agent in marl_env.agents}
+        obs, _, terminated, truncated, _ = marl_env.step(actions)
+
+        if all(terminated.values()) or all(truncated.values()):
+            done = True
+
+    print("MARL live trading session finished.")
+
 if __name__ == "__main__":
     args = parse_args()
-    if args.start and args.end:
+    if args.trade:
+        choice = input("Select agent to run: (1) Single Agent, (2) HRL, (3) MARL: ")
+        if choice == '1':
+            run_single_agent_live()
+        elif choice == '2':
+            run_hrl_live()
+        elif choice == '3':
+            run_marl_live()
+        else:
+            print("Invalid choice.")
+    elif args.start and args.end:
         backtest_main(args)
     else:
         app = TradingApplication()

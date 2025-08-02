@@ -219,51 +219,83 @@ graph TD
 
 ## Usage
 
-*   **Daily Pre-Market Setup** (8:00 AM EST)
-    ```bash
-    python run.py --setup
-    ```
-    Performs daily market analysis and sets the daily bias.
+This section provides a comprehensive list of commands to run the different parts of the project.
 
-*   **Trading Session** (9:30 AM - 3:45 PM EST)
+**1. Data Preparation**
+
+*   **Scrape economic calendar and news data**:
+    ```bash
+    python scraper.py
+    ```
+
+*   **Prepare an offline dataset for Offline RL**:
+    ```bash
+    python prepare_offline_dataset.py
+    ```
+
+**2. Training RL Agents**
+
+*   **Train a single agent (PPO, SAC, or TQC)**:
+    ```bash
+    python train_rl_agent.py --agent tqc --timesteps 100000 --wandb-project rl-trader
+    ```
+
+*   **Train a TQC agent with a Transformer policy**:
+    ```bash
+    python train_rl_agent.py --agent tqc --policy transformer --timesteps 100000 --wandb-project rl-trader
+    ```
+
+*   **Run a walk-forward training**:
+    ```bash
+    python train_rl_agent.py --agent tqc --walk-forward --timesteps 10000 --train-days 180 --val-days 60 --step-days 60 --wandb-project rl-trader
+    ```
+
+*   **Run an ablation study**:
+    ```bash
+    bash run_ablation.sh
+    ```
+
+*   **Run a hyperparameter optimization**:
+    ```bash
+    bash run_optimization.sh
+    ```
+
+*   **Train an HRL agent**:
+    ```bash
+    python train_hrl_agent.py
+    ```
+
+*   **Train a MARL system**:
+    ```bash
+    python train_marl_agent.py
+    ```
+
+*   **Train an Offline RL agent**:
+    ```bash
+    python train_offline_agent.py
+    ```
+
+**3. Live Trading**
+
+*   **Run an agent in live trading mode**:
     ```bash
     python run.py --trade
     ```
-    Runs real-time trading loop.
-    Executes trades based on multi-timeframe analysis.
-    Manages risk and position sizing.
+    This will prompt you to select which agent you want to run.
 
-*   **Backtesting (historical, date-ranged)**
-```bash
-# Example: full-year 2023 SPY on 5-minute bars, RTH only, write master trades CSV
-python run.py --symbol SPY --timeframe 5min --start 20230101 --end 20231231 --rth-only --csv-out data/trades_master.csv
-```
-What this does:
-- Uses the new historical backtester wired via [python.backtest_main()](run.py:135) and [python.Backtester](src/execution/backtester.py:1)
-- Iterates day-by-day across the specified date range
-- Applies an RTH filter (09:30–16:00 America/New_York) if --rth-only is set
-- Evaluates modular entries each bar using [python.IntradayStrategy.evaluate_entry()](src/strategies/intraday_strategy.py:520)
-- Enforces per-day daily max loss halt and continues to the next day
-- Saves trades to a master CSV if --csv-out provided and prints a summary at the end
+**4. Evaluation**
 
-*   **Training an RL Agent**
-```bash
-# Example: train a PPO agent on SPY 5-minute bars for 2023
-python train_rl_agent.py --agent ppo --symbol SPY --timeframe 5min --start 20230101 --end 20231231 --timesteps 10000
+*   **Run the baseline backtester**:
+    ```bash
+    python run.py --start 20230101 --end 20231231 --csv-out data/baseline_trades.csv
+    ```
 
-# Train a TQC agent with walk-forward training
-python train_rl_agent.py --agent tqc --symbol SPY --timeframe 5min --start 20230101 --end 20231231 --timesteps 10000 --walk-forward --train-days 180 --val-days 60 --step-days 60 --wandb-project rl-trader
-```
-
-*   **Evaluating an RL Agent**
-The `evaluation_enhanced.ipynb` notebook provides a comprehensive framework for evaluating and comparing the performance of different agents. To use it:
-1.  Make sure you have the trade logs for the baseline and the RL agents you want to evaluate. The walk-forward training script will generate a trade log for the validation periods.
-2.  Open the notebook and update the file paths in the "Configuration and Data Loading" section.
-3.  Run the notebook to generate a detailed report with metrics, plots, and a comparison table.
-```bash
-# Example: evaluate a trained PPO agent
-python train_rl_agent.py --agent ppo --symbol SPY --timeframe 5min --start 20240101 --end 20240131 --timesteps 0 --eval-only
-```
+*   **Analyze the results in the evaluation notebooks**:
+    *   `evaluation_enhanced.ipynb`: For single agents.
+    *   `evaluation_hrl.ipynb`: For the HRL agent.
+    *   `evaluation_marl.ipynb`: For the MARL system.
+    *   `evaluation_offline.ipynb`: For the offline-trained agent.
+    *   `evaluation_transformer.ipynb`: For the Transformer-based agent.
 
 CLI flags (new):
 - --start YYYYMMDD, --end YYYYMMDD: historical date range (required together for backtest mode)
@@ -822,6 +854,27 @@ The framework supports a Transformer-based policy for the TQC agent.
 
 -   **Transformer Policy**: The `TransformerPolicy` uses a Transformer encoder to process the sequence of market data.
 -   **Usage**: You can use the `--policy transformer` argument in the `train_rl_agent.py` script to use the Transformer policy.
+
+## Multi-Timeframe Analysis
+
+The framework now supports the use of multi-timeframe features.
+
+-   **Multi-Timeframe Features**: The `add_multi_timeframe_features` function in `src/features/multi_timeframe.py` generates features from daily and weekly timeframes, as well as support and resistance levels.
+-   **Integration**: These features are automatically added to the dataset when you run the `train_rl_agent.py` script.
+
+## Database Integration
+
+All trades from the backtester and the RL environment are now logged to a SQLite database.
+
+-   **Database Manager**: The `DatabaseManager` class in `src/data/database.py` handles all database operations.
+-   **Trade Logging**: The `Backtester` and `TradingEnv` classes now use the `DatabaseManager` to log all trades.
+
+## Optimization Suite
+
+The framework includes a simple optimization suite for hyperparameter tuning.
+
+-   **Configuration**: You can define the hyperparameters to be tuned in the `config/optimization.yaml` file.
+-   **Execution**: The `run_optimization.sh` script runs a series of backtests with different hyperparameter combinations.
 
 # New: Troubleshooting
 
