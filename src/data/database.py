@@ -221,38 +221,62 @@ class DatabaseManager:
             print(f"Error logging tweet analysis: {e}")
             return False
 
-    def log_trade(self, action, symbol, price, size, strategy, pattern, sentiment_score=0.0, timeframe='15m'):
-        """Log a trade in the database"""
+    def log_trade_record(self, trade_record):
+        """Log a trade from a TradeRecord object."""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
+
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS trades (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    action TEXT NOT NULL,
-                    symbol TEXT NOT NULL,
-                    price REAL NOT NULL,
-                    size REAL NOT NULL,
-                    strategy TEXT,
-                    pattern TEXT,
-                    sentiment_score REAL,
-                    timeframe TEXT
+                    entry_time TIMESTAMP,
+                    exit_time TIMESTAMP,
+                    side TEXT,
+                    entry REAL,
+                    exit REAL,
+                    stop REAL,
+                    target REAL,
+                    shares REAL,
+                    pnl REAL,
+                    r_multiple REAL,
+                    mae_r REAL,
+                    mfe_r REAL,
+                    duration_bars INTEGER,
+                    setup_name TEXT,
+                    reasons TEXT,
+                    regime TEXT
                 )
             ''')
-            
+
             cursor.execute('''
                 INSERT INTO trades 
-                (action, symbol, price, size, strategy, pattern, sentiment_score, timeframe)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (action, symbol, price, size, strategy, pattern, sentiment_score, timeframe))
-            
+                (entry_time, exit_time, side, entry, exit, stop, target, shares, pnl, r_multiple, mae_r, mfe_r, duration_bars, setup_name, reasons, regime)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                trade_record.entry_time,
+                trade_record.exit_time,
+                trade_record.side,
+                trade_record.entry,
+                trade_record.exit,
+                trade_record.stop,
+                trade_record.target,
+                trade_record.shares,
+                trade_record.pnl,
+                trade_record.r_multiple,
+                trade_record.mae_r,
+                trade_record.mfe_r,
+                trade_record.duration_bars,
+                trade_record.setup_name,
+                trade_record.reasons,
+                trade_record.regime
+            ))
+
             conn.commit()
             conn.close()
             return True
         except Exception as e:
-            print(f"Error logging trade: {e}")
+            print(f"Error logging trade record: {e}")
             return False
             
     def get_trade_history(self, symbol=None, limit=100):

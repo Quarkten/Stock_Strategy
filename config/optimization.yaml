@@ -1,0 +1,13 @@
+# Hyperparameter optimization configuration
+
+parameters:
+    agent: ['tqc']
+    policy: ['mlp', 'transformer']
+    reward:
+        loss_aversion_lambda: [1.5, 2.0, 2.5]
+        tail_gain_scale: [1.5, 2.0, 2.5]
+        gain_knee_r: [1.2, 1.5, 1.8]
+    training:
+        tqc:
+            learning_rate: [1e-4, 3e-4, 7e-4]
+            batch_size: [256, 512]
